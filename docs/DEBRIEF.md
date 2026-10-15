@@ -152,5 +152,11 @@ machine profile are recorded in [NUMBERS.md](NUMBERS.md).
 
 ### Gate
 
-Do not start P1 until the P0 quiz in the build spec's "Checkpoint quizzes" tab is answered
-at 80% or better, without notes.
+**Suspended by the owner on 2026-10-15.** The spec gates each phase behind passing that
+phase's quiz at 80%; because of a time crunch, the build proceeds without stopping to
+self-test. The study material is still written in full every phase, and
+[STUDY.md](STUDY.md) is the index for working through it once the build is done.
+
+The trade-off, stated plainly so it is not forgotten: the quizzes existed to catch the gap
+between "the code works" and "I can explain the code." Skipping them does not close that
+gap, it defers it — and the resume bar in the spec is still twenty questions answered cold.

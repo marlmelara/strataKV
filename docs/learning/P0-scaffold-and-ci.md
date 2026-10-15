@@ -308,12 +308,14 @@ agreed with the C++ table implementation, including the `0xE3069283` the build s
 Two independent implementations agreeing is meaningfully stronger evidence than one
 implementation agreeing with itself.
 
-## Checkpoint gate
+## Checkpoint
 
-**Do not start P1** until the P0 quiz in the build spec's "Checkpoint quizzes" tab is
-answered at 80% or better without notes. Its five questions cover: headers versus source
-files, what each of the four presets catches, what undefined behavior is and why sanitizers
-matter, what scikit-build-core does during `pip install .`, and what CRC32C is and is not.
+The spec's checkpoint gate is **suspended for this build** — P1 started without waiting on
+a quiz pass. The questions are still here to work through later; see
+[STUDY.md](../STUDY.md) for the order to do it in.
 
-Five further questions, written against the real code rather than the concepts, are at the
-end of the [P0 debrief](../DEBRIEF.md).
+Two sets cover this phase. The five conceptual questions in the spec's "Checkpoint quizzes"
+tab ask about headers versus source files, what each of the four presets catches, what
+undefined behavior is and why sanitizers matter, what scikit-build-core does during
+`pip install .`, and what CRC32C is and is not. Five further questions written against this
+repository's real code are at the end of the [P0 debrief](../DEBRIEF.md#five-questions).

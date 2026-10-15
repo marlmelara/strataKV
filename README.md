@@ -103,6 +103,7 @@ disk.
 
 ## Documentation
 
+- [docs/STUDY.md](docs/STUDY.md) — **start here to learn the codebase**: the phase-by-phase study path
 - [docs/DESIGN.md](docs/DESIGN.md) — on-disk formats and the decisions behind them
 - [docs/DEBRIEF.md](docs/DEBRIEF.md) — what each phase built, and what it cost
 - [docs/NUMBERS.md](docs/NUMBERS.md) — every measured number, with the command that produced it
