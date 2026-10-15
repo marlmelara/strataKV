@@ -14,8 +14,8 @@ PYBIND11_MODULE(_stratakv, m) {
   m.doc() = "Compiled core of StrataKV. Import the `stratakv` package instead.";
 
   m.def(
-      "version", []() { return std::string(stratakv::Version()); },
+      "version", []() { return std::string(stratakv::VersionString()); },
       "Version of the compiled engine, taken from the CMake project version.");
 
-  m.attr("__version__") = std::string(stratakv::Version());
+  m.attr("__version__") = std::string(stratakv::VersionString());
 }

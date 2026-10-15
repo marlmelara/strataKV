@@ -43,6 +43,7 @@ add_library(stratakv
             src/sstable_reader.cc
             src/status.cc
             src/version.cc
+            src/version_string.cc
             src/wal_reader.cc
             src/wal_writer.cc
             src/write_batch.cc)

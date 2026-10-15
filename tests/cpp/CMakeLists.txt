@@ -21,6 +21,7 @@ add_executable(stratakv_tests
                test_sstable.cc
                test_status.cc
                test_version.cc
+               test_version_string.cc
                test_wal.cc
                test_write_batch.cc)
 

@@ -662,6 +662,37 @@ and said so rather than implied.
 so a pathologically slow reader delays reclamation. That is the intended trade-off, but
 nothing bounds it, and nothing tests it.
 
+### A bug CI caught that the whole C++ suite missed
+
+P3 added `src/version.cc` for the `VersionSet`. P0 already had a file of that name, holding
+the one-line function that returns the engine's version string. **The new file silently
+overwrote it**, so `stratakv::Version()` no longer had a definition anywhere.
+
+Every one of the 212 C++ tests still passed, because nothing in them called that function:
+it existed only for the Python binding to expose. A static library links fine with an
+undefined symbol nobody references. The failure surfaced as `symbol not found in flat
+namespace` when the extension module was loaded -- on both operating systems, in CI, after
+the commit was already pushed.
+
+Two things were wrong, and both are fixed:
+
+1. **A name collision.** `stratakv::Version` was now both a class (the immutable file-set
+   snapshot) and a function (the version string). That compiled only because no translation
+   unit happened to include both `include/stratakv/version.h` and `src/version.h` -- luck,
+   not design, and it would have broken the moment some header pulled in both. The function
+   is now `VersionString()` in `src/version_string.cc`, which cannot collide.
+
+2. **A coverage hole that made the first problem invisible.** The version string was reachable
+   only through Python, so a C++-only change could break it while the C++ suite stayed green.
+   `test_version_string.cc` now references it from four C++ tests, so a missing definition
+   fails the C++ build immediately.
+
+The lesson worth keeping: **a symbol only exercised by one binding is effectively untested by
+the other.** The C++ suite passing said nothing about whether the library was complete,
+because completeness is only tested at the point something links against all of it. It also
+argues for the Python jobs in CI being genuinely load-bearing rather than a formality -- they
+were the only thing standing between this and a broken release.
+
 ### One unresolved observation
 
 A four-preset sweep reported a single test failure under `debug` and `release` but not under
