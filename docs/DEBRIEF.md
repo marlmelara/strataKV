@@ -94,7 +94,21 @@ After pinning the linters, run
 [38786203847](https://github.com/marlmelara/strataKV/actions/runs/38786203847) passed all
 thirteen jobs. **P0's three acceptance criteria are therefore all met.** The one remaining
 annotation was a Node.js 20 deprecation warning on `actions/checkout@v4` and
-`actions/setup-python@v5`, since fixed by moving both to `@v7`.
+`actions/setup-python@v5`, since fixed by moving both to `@v7`. Final green run:
+[38786517662](https://github.com/marlmelara/strataKV/actions/runs/38786517662).
+
+### Known upcoming risk
+
+GitHub warns that **the `ubuntu-latest` label migrates to Ubuntu 26 beginning October 19,
+2026** — four days after this phase was finished. That changes the default GCC, and the
+presets compile with `-Werror` alongside `-Wconversion` and `-Wsign-conversion`, so a
+newer GCC finding something the current one did not would turn CI red without any code
+changing.
+
+This is left deliberately unpinned. Catching a new compiler's warnings is the point of
+having those flags, and a storage engine should want to know. But if CI goes red shortly
+after October 19 with no commit to blame, this is the first thing to check: the fix is
+either to address the warning or to pin `ubuntu-24.04` in the matrix.
 
 ### Five questions
 
