@@ -13,8 +13,9 @@
 namespace stratakv {
 
 enum class FileType : uint8_t {
-  kWal,    // 000007.log -- a write-ahead log
-  kTable,  // 000004.sst -- an SSTable
+  kWal,       // 000007.log -- a write-ahead log
+  kTable,     // 000004.sst -- an SSTable
+  kManifest,  // MANIFEST-000005 -- the log of version edits
 };
 
 inline std::string LockFileName(const std::string& directory) { return directory + "/LOCK"; }
@@ -39,19 +40,32 @@ inline std::string TableFileName(const std::string& directory, uint64_t number) 
   return internal::NumberedName(directory, number, ".sst");
 }
 
+// MANIFESTs are named with a prefix rather than an extension, following the
+// convention CURRENT's contents refer to.
+inline std::string ManifestFileName(const std::string& directory, uint64_t number) {
+  std::string digits = std::to_string(number);
+  if (digits.size() < 6) digits.insert(0, 6 - digits.size(), '0');
+  return directory + "/MANIFEST-" + digits;
+}
+
 // Parses a bare file name such as "000007.log". Returns false for anything that
 // is not one of ours -- LOCK, a stray file, or a number that does not fit --
 // so an unexpected file in the directory is ignored rather than misread.
 inline bool ParseFileName(std::string_view name, uint64_t* number, FileType* type) {
+  std::string_view digits;
   if (name.size() > 4 && name.substr(name.size() - 4) == ".log") {
     *type = FileType::kWal;
+    digits = name.substr(0, name.size() - 4);
   } else if (name.size() > 4 && name.substr(name.size() - 4) == ".sst") {
     *type = FileType::kTable;
+    digits = name.substr(0, name.size() - 4);
+  } else if (name.size() > 9 && name.substr(0, 9) == "MANIFEST-") {
+    *type = FileType::kManifest;
+    digits = name.substr(9);
   } else {
     return false;
   }
 
-  const std::string_view digits = name.substr(0, name.size() - 4);
   if (digits.empty() || digits.size() > 20) return false;
 
   uint64_t parsed = 0;

@@ -69,7 +69,7 @@ class FlushTest : public ::testing::Test {
 TEST_F(FlushTest, SmallDatabaseNeverRotates) {
   auto db = OpenOrDie(SmallMemtableOptions());
   ASSERT_TRUE(db->Put(WriteOptions{}, "k", "v").ok());
-  ASSERT_TRUE(dynamic_cast<DBImpl*>(db.get())->TEST_WaitForFlush().ok());
+  ASSERT_TRUE(dynamic_cast<DBImpl*>(db.get())->TEST_WaitForBackgroundWork().ok());
 
   EXPECT_TRUE(ChildrenWithSuffix(".sst").empty()) << "nothing should have been flushed yet";
 }
@@ -82,10 +82,12 @@ TEST_F(FlushTest, CrossingTheMemtableLimitProducesAnSSTable) {
   for (int i = 0; i < 1000; ++i) {
     ASSERT_TRUE(db->Put(WriteOptions{}, NumberedKey(i), NumberedValue(i)).ok()) << i;
   }
-  ASSERT_TRUE(impl->TEST_WaitForFlush().ok());
+  ASSERT_TRUE(impl->TEST_WaitForBackgroundWork().ok());
 
   EXPECT_GT(ChildrenWithSuffix(".sst").size(), 0U) << "a rotation should have flushed a table";
-  EXPECT_GT(impl->TEST_Level0FileCount(), 0U);
+  // From P3, compaction may have already drained L0 into L1, so the data can
+  // legitimately be at either level -- what matters is that it reached disk.
+  EXPECT_GT(impl->TEST_FileCount(0) + impl->TEST_FileCount(1), 0U);
 
   // Everything must still read back, whichever level it now lives in.
   std::string value;
@@ -104,8 +106,9 @@ TEST_F(FlushTest, ReadsSpanMemtableImmutableMemtableAndL0) {
   for (int i = 0; i < 2000; ++i) {
     ASSERT_TRUE(db->Put(WriteOptions{}, NumberedKey(i), NumberedValue(i)).ok());
   }
-  ASSERT_TRUE(impl->TEST_WaitForFlush().ok());
-  ASSERT_GT(impl->TEST_Level0FileCount(), 1U) << "several tables are needed for this to be a test";
+  ASSERT_TRUE(impl->TEST_WaitForBackgroundWork().ok());
+  ASSERT_GT(impl->TEST_FileCount(0) + impl->TEST_FileCount(1), 1U)
+      << "several tables are needed for this to be a test";
 
   // Overwrite a key that is certainly in an old table. The newer value lives in
   // the memtable and must win.
@@ -137,8 +140,8 @@ TEST_F(FlushTest, NewerTablesShadowOlderOnes) {
       ASSERT_TRUE(db->Put(WriteOptions{}, NumberedKey(round * 1000 + i), "filler").ok());
     }
   }
-  ASSERT_TRUE(impl->TEST_WaitForFlush().ok());
-  ASSERT_GT(impl->TEST_Level0FileCount(), 1U);
+  ASSERT_TRUE(impl->TEST_WaitForBackgroundWork().ok());
+  ASSERT_GT(impl->TEST_FileCount(0) + impl->TEST_FileCount(1), 1U);
 
   std::string value;
   ASSERT_TRUE(db->Get(ReadOptions{}, "tracked", &value).ok());
@@ -154,7 +157,7 @@ TEST_F(FlushTest, LogsAreDeletedOnlyAfterTheirTableIsWritten) {
   for (int i = 0; i < 2000; ++i) {
     ASSERT_TRUE(db->Put(WriteOptions{}, NumberedKey(i), NumberedValue(i)).ok());
   }
-  ASSERT_TRUE(impl->TEST_WaitForFlush().ok());
+  ASSERT_TRUE(impl->TEST_WaitForBackgroundWork().ok());
 
   const auto tables = ChildrenWithSuffix(".sst");
   const auto logs = ChildrenWithSuffix(".log");
@@ -171,7 +174,7 @@ TEST_F(FlushTest, EverythingSurvivesCloseAndReopenAfterManyFlushes) {
     for (int i = 0; i < kKeys; ++i) {
       ASSERT_TRUE(db->Put(WriteOptions{}, NumberedKey(i), NumberedValue(i)).ok());
     }
-    ASSERT_TRUE(dynamic_cast<DBImpl*>(db.get())->TEST_WaitForFlush().ok());
+    ASSERT_TRUE(dynamic_cast<DBImpl*>(db.get())->TEST_WaitForBackgroundWork().ok());
     ASSERT_TRUE(db->Close().ok());
   }
 
@@ -193,7 +196,7 @@ TEST_F(FlushTest, SequenceNumbersContinueAcrossAFullFlushAndReopen) {
     for (int i = 0; i < 2000; ++i) {
       ASSERT_TRUE(db->Put(WriteOptions{}, NumberedKey(i), "first-generation").ok());
     }
-    ASSERT_TRUE(dynamic_cast<DBImpl*>(db.get())->TEST_WaitForFlush().ok());
+    ASSERT_TRUE(dynamic_cast<DBImpl*>(db.get())->TEST_WaitForBackgroundWork().ok());
     ASSERT_TRUE(db->Close().ok());
   }
 
@@ -233,7 +236,7 @@ TEST_F(FlushTest, OverwritesAndDeletesSurviveFlushesAndReopen) {
       ASSERT_TRUE(db->Delete(WriteOptions{}, NumberedKey(i)).ok());
       model.erase(NumberedKey(i));
     }
-    ASSERT_TRUE(dynamic_cast<DBImpl*>(db.get())->TEST_WaitForFlush().ok());
+    ASSERT_TRUE(dynamic_cast<DBImpl*>(db.get())->TEST_WaitForBackgroundWork().ok());
     ASSERT_TRUE(db->Close().ok());
   }
 
@@ -262,7 +265,7 @@ TEST_F(FlushTest, APartiallyWrittenTableIsDiscardedOnOpen) {
     for (int i = 0; i < 2000; ++i) {
       ASSERT_TRUE(db->Put(WriteOptions{}, NumberedKey(i), NumberedValue(i)).ok());
     }
-    ASSERT_TRUE(dynamic_cast<DBImpl*>(db.get())->TEST_WaitForFlush().ok());
+    ASSERT_TRUE(dynamic_cast<DBImpl*>(db.get())->TEST_WaitForBackgroundWork().ok());
     ASSERT_TRUE(db->Close().ok());
   }
 
@@ -304,8 +307,8 @@ TEST_F(FlushTest, OneMillionKeysSurviveReopen) {
       ASSERT_TRUE(db->Write(WriteOptions{}, &batch).ok()) << "batch at " << base;
     }
     auto* impl = dynamic_cast<DBImpl*>(db.get());
-    ASSERT_TRUE(impl->TEST_WaitForFlush().ok());
-    level0_files = impl->TEST_Level0FileCount();
+    ASSERT_TRUE(impl->TEST_WaitForBackgroundWork().ok());
+    level0_files = impl->TEST_FileCount(0) + impl->TEST_FileCount(1);
     ASSERT_TRUE(db->Close().ok());
   }
 
@@ -377,8 +380,9 @@ TEST_F(FlushTest, ReadersSeeEveryAcknowledgedKeyWhileFlushesRun) {
       << "readers never ran, so this proved nothing";
 
   auto* impl = dynamic_cast<DBImpl*>(db.get());
-  ASSERT_TRUE(impl->TEST_WaitForFlush().ok());
-  EXPECT_GT(impl->TEST_Level0FileCount(), 0U) << "no flush happened, so this proved nothing";
+  ASSERT_TRUE(impl->TEST_WaitForBackgroundWork().ok());
+  EXPECT_GT(impl->TEST_FileCount(0) + impl->TEST_FileCount(1), 0U)
+      << "no flush happened, so this proved nothing";
 }
 
 // After a crash that leaves several logs behind, recovery replays all of them
@@ -413,7 +417,7 @@ TEST_F(FlushTest, LogsLeftByACrashAreCleanedUpByTheNextFlush) {
     for (int i = 0; i < 4000; ++i) {
       ASSERT_TRUE(db->Put(WriteOptions{}, "post-recovery-" + std::to_string(i), "v").ok());
     }
-    ASSERT_TRUE(dynamic_cast<DBImpl*>(db.get())->TEST_WaitForFlush().ok());
+    ASSERT_TRUE(dynamic_cast<DBImpl*>(db.get())->TEST_WaitForBackgroundWork().ok());
     ASSERT_TRUE(db->Close().ok());
   }
 
@@ -437,7 +441,7 @@ TEST_F(FlushTest, StrayFilesInTheDirectoryAreIgnored) {
     for (int i = 0; i < 1000; ++i) {
       ASSERT_TRUE(db->Put(WriteOptions{}, NumberedKey(i), NumberedValue(i)).ok());
     }
-    ASSERT_TRUE(dynamic_cast<DBImpl*>(db.get())->TEST_WaitForFlush().ok());
+    ASSERT_TRUE(dynamic_cast<DBImpl*>(db.get())->TEST_WaitForBackgroundWork().ok());
     ASSERT_TRUE(db->Close().ok());
   }
 

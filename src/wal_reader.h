@@ -24,6 +24,20 @@ class WalRecordHandler {
   virtual Status OnBatch(uint64_t sequence, uint32_t count, std::string_view ops) = 0;
 };
 
+// Receives each record's raw payload, before any interpretation of what is
+// inside it. The MANIFEST uses the same record framing as the WAL, so it reuses
+// this and the torn-tail handling below rather than repeating them.
+class RecordPayloadHandler {
+ public:
+  RecordPayloadHandler() = default;
+  virtual ~RecordPayloadHandler() = default;
+
+  RecordPayloadHandler(const RecordPayloadHandler&) = delete;
+  RecordPayloadHandler& operator=(const RecordPayloadHandler&) = delete;
+
+  virtual Status OnRecord(std::string_view payload) = 0;
+};
+
 // Replays a write-ahead log, then cuts off anything that was not complete.
 //
 // The central rule, and the reason recovery is correct: a record that was not
@@ -44,6 +58,11 @@ class WalReader {
   // Returns OK if the file is missing: an empty database has no log yet.
   static Status Replay(Env& env, const std::string& directory, const std::string& path,
                        WalRecordHandler& handler);
+
+  // The same scan, truncation, and corruption rules, handing back raw payloads.
+  // Used by the MANIFEST, whose payloads are version edits rather than batches.
+  static Status ReplayRecords(Env& env, const std::string& directory, const std::string& path,
+                              RecordPayloadHandler& handler);
 };
 
 }  // namespace stratakv

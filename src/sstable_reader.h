@@ -11,6 +11,7 @@
 #include "bloom.h"
 #include "env.h"
 #include "internal_key.h"
+#include "iterator.h"
 
 namespace stratakv {
 
@@ -38,10 +39,18 @@ class SSTableReader {
   Status Get(std::string_view lookup_key, std::string_view user_key, std::string* value,
              bool* found) const;
 
+  // Walks every entry in the table in sorted order. Used by compaction, which
+  // reads whole files rather than looking keys up one at a time.
+  std::unique_ptr<Iterator> NewIterator() const;
+
   size_t BlockCount() const { return index_.size(); }
   const BloomFilter& filter() const { return filter_; }
 
  private:
+  // The iterator walks index_ and calls ReadBlock directly, which keeps the
+  // block-decoding logic in one file instead of exposing the layout publicly.
+  friend class TableIterator;
+
   struct IndexEntry {
     std::string last_key;
     uint64_t offset;

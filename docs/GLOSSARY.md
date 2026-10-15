@@ -54,3 +54,18 @@ Each phase appends the terms it introduced.
 | Rotation | Retiring a full memtable, starting a new log and memtable, and handing the old one to the flush thread | `DBImpl::MakeRoomForWrite` |
 | Sequence watermark | A zero-operation record at the start of each new log, carrying the current sequence number so numbering survives having every log flushed and deleted | `DBImpl::WriteSequenceWatermark` |
 | SSTable | A sorted, immutable file of entries with its own filter, index, and footer. Never modified after it is written, which is what makes crash safety tractable | `src/sstable_builder.h` |
+
+## P3
+
+| Term | Plain-English meaning | Where it shows up |
+| --- | --- | --- |
+| Compaction input / output | The files a compaction reads, and the fresh files it writes. Inputs are deleted once the outputs are recorded | `CompactLevel0` |
+| CURRENT | A tiny file naming the live MANIFEST, replaced atomically by write-sync-rename-sync | `SetCurrentFile` |
+| MANIFEST | An append-only log of changes to the file set. Authoritative: it, not the directory listing, says what the database consists of | `VersionSet::LogAndApply` |
+| MVCC (multi-version concurrency control) | Readers see a fixed version of the data while writers carry on. Here it is a Version snapshot plus a sequence number | `DBImpl::Get` |
+| Read amplification | How many files a single lookup may have to consult. Compaction reduces it by collapsing L0 into non-overlapping L1 files | `Version::Get` |
+| Smallest snapshot | The oldest sequence number any in-flight read might still need. Compaction may not drop a version at or above it | `DBImpl::SmallestActiveSnapshot` |
+| Space amplification | Bytes on disk divided by bytes of live data. Measured at 1.44x after compaction | [NUMBERS.md](NUMBERS.md) |
+| Version | An immutable snapshot of the file set, reference counted. Holding one guarantees its files stay open and undeleted | `src/version.h` |
+| Version edit | One recorded change to the file set: files added, files removed, counters updated | `VersionEdit` |
+| Write amplification | Bytes written to disk per byte the user wrote. Compaction spends it to buy back read and space amplification | `CompactLevel0` |

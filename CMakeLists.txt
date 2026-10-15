@@ -32,11 +32,13 @@ add_library(stratakv
             src/arena.cc
             src/bloom.cc
             src/crash_point.cc
+            src/compaction.cc
             src/crc32c.cc
             src/db_impl.cc
             src/env.cc
             src/internal_key.cc
             src/memtable.cc
+            src/merging_iterator.cc
             src/sstable_builder.cc
             src/sstable_reader.cc
             src/status.cc

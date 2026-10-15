@@ -5,12 +5,15 @@ C++20 engine, Python package, crash fuzzer, and benchmarks. In one sentence: a t
 RocksDB — you `put`, `get`, and `delete` keys, every acknowledged write survives
 `kill -9`, and reads stay fast as data grows past memory.
 
-> **Status: P2 of 7 complete.** Every acknowledged write reaches a checksummed
+> **Status: P3 of 7 complete.** Every acknowledged write reaches a checksummed
 > write-ahead log and is `fsync`ed before `Put` returns; full memtables are flushed to
 > immutable SSTables on a background thread, and reads span memtable, immutable memtable,
-> and L0 with bloom filters sparing most lookups any disk read. Compaction, group commit,
-> and the Python `DB` class land in P3–P5. There are no throughput numbers in this README
-> yet because none have been measured — see [docs/NUMBERS.md](docs/NUMBERS.md).
+> and L0 with bloom filters sparing most lookups any disk read. Compaction now merges L0
+> into L1, reclaiming space from overwrites and deletes, with a MANIFEST recording the file
+> set and reference-counted version snapshots so files are never deleted under a running
+> read. Group commit and the Python `DB` class land in P4–P5. There are no throughput
+> numbers in this README yet because none have been measured — see
+> [docs/NUMBERS.md](docs/NUMBERS.md).
 
 ## What works today
 
@@ -29,6 +32,8 @@ RocksDB — you `put`, `get`, and `delete` keys, every acknowledged write surviv
 | SSTables | [src/sstable_builder.h](src/sstable_builder.h), [src/sstable_reader.h](src/sstable_reader.h) | Sorted immutable files: data blocks, bloom filter, index, checksummed footer |
 | Bloom filters | [src/bloom.h](src/bloom.h) | 10 bits/key, 7 probes, **measured 0.729%** false-positive rate |
 | Background flush | [src/db_impl.h](src/db_impl.h) | Memtable rotation at 4 MB; a log is deleted only once its table is durable |
+| MANIFEST + versions | [src/version.h](src/version.h) | Append-only log of version edits, atomic `CURRENT` replacement, reference-counted snapshots |
+| Compaction | [src/compaction.h](src/compaction.h) | L0→L1 k-way merge; drops shadowed versions and tombstones, **1.44×** space amplification measured |
 
 ## Building
 

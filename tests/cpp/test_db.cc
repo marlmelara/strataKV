@@ -1,6 +1,7 @@
 #include <memory>
 #include <string>
 #include <string_view>
+#include <vector>
 
 #include <gtest/gtest.h>
 
@@ -23,7 +24,21 @@ using testing::TempDir;
 class DBTest : public ::testing::Test {
  protected:
   std::string DbPath() const { return dir_.Child("mydb"); }
-  std::string WalPath() const { return DbPath() + "/000001.log"; }
+
+  // Discovered rather than hardcoded: file numbers are assigned at runtime, and
+  // from P3 the MANIFEST takes one of them, so the log's number is not fixed.
+  std::string WalPath() const {
+    std::vector<std::string> children;
+    EXPECT_TRUE(Env::Default().GetChildren(DbPath(), &children).ok());
+    std::string newest;
+    for (const std::string& name : children) {
+      if (name.size() > 4 && name.substr(name.size() - 4) == ".log" && name > newest) {
+        newest = name;
+      }
+    }
+    EXPECT_FALSE(newest.empty()) << "no log file in " << DbPath();
+    return DbPath() + "/" + newest;
+  }
 
   Status Open(std::unique_ptr<DB>* db, Options options = Options{}) {
     return DB::Open(options, DbPath(), db);

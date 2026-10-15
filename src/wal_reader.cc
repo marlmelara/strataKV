@@ -131,8 +131,41 @@ Status Scan(const RandomAccessFile& file, ScanResult* result) {
 
 }  // namespace
 
+namespace {
+
+// Adapts the raw-payload interface to the batch interface: decodes the
+// seq | count | operations header the WAL puts in every payload.
+class BatchDecodingHandler final : public RecordPayloadHandler {
+ public:
+  BatchDecodingHandler(WalRecordHandler& handler, const std::string& path)
+      : handler_(&handler), path_(&path) {}
+
+  Status OnRecord(std::string_view payload) override {
+    // payload = seq(8) | count(4) | operations
+    if (payload.size() < 12) {
+      return Status::Corruption(*path_, "record payload too short for a batch header");
+    }
+    const auto* bytes = reinterpret_cast<const uint8_t*>(payload.data());
+    const uint64_t sequence = DecodeFixed64(bytes);
+    const uint32_t count = DecodeFixed32(bytes + 8);
+    return handler_->OnBatch(sequence, count, payload.substr(12));
+  }
+
+ private:
+  WalRecordHandler* handler_;
+  const std::string* path_;
+};
+
+}  // namespace
+
 Status WalReader::Replay(Env& env, const std::string& directory, const std::string& path,
                          WalRecordHandler& handler) {
+  BatchDecodingHandler adapter(handler, path);
+  return ReplayRecords(env, directory, path, adapter);
+}
+
+Status WalReader::ReplayRecords(Env& env, const std::string& directory, const std::string& path,
+                                RecordPayloadHandler& handler) {
   if (!env.FileExists(path)) return Status::OK();
 
   std::unique_ptr<RandomAccessFile> file;
@@ -154,16 +187,7 @@ Status WalReader::Replay(Env& env, const std::string& directory, const std::stri
       return Status::Corruption(path, "record changed between scan and replay");
     }
 
-    // payload = seq(8) | count(4) | operations
-    if (record.payload.size() < 12) {
-      return Status::Corruption(path, "record payload too short for a batch header");
-    }
-    const auto* bytes = reinterpret_cast<const uint8_t*>(record.payload.data());
-    const uint64_t sequence = DecodeFixed64(bytes);
-    const uint32_t count = DecodeFixed32(bytes + 8);
-    const std::string_view ops = record.payload.substr(12);
-
-    if (auto s = handler.OnBatch(sequence, count, ops); !s.ok()) return s;
+    if (auto s = handler.OnRecord(record.payload); !s.ok()) return s;
     offset += kWalHeaderSize + record.length;
   }
 

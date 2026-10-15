@@ -368,3 +368,112 @@ auto* impl = dynamic_cast<DBImpl*>(db.get());
 A checked downcast from a base pointer to a derived one, returning `nullptr` if the object
 is not actually that type. Used only in tests, to reach test-only observation points
 through the public `DB` interface. It needs a virtual function in the base class to work.
+
+## P3
+
+### `std::priority_queue` as a min-heap
+
+```cpp
+using Heap = std::priority_queue<Iterator*, std::vector<Iterator*>, Greater>;
+```
+
+C++'s heap is a **max-heap** by default, so `top()` gives the largest element. Passing a
+"greater than" comparison flips it into a min-heap and `top()` becomes the smallest. Python's
+`heapq` is already a min-heap, so this inversion has no Python equivalent and is easy to get
+backwards.
+
+`top()` and `pop()` are separate calls: look at the smallest, then remove it. Python's
+`heapq.heappop` does both at once.
+
+### Function objects
+
+```cpp
+struct Greater {
+  const InternalKeyComparator* comparator;
+  bool operator()(const Iterator* a, const Iterator* b) const { ... }
+};
+```
+
+Defining `operator()` makes a struct callable like a function. A lambda is really just a
+compiler-generated version of this. The explicit struct is used where the type has to be
+*named* — here in a `using` declaration — which a lambda's anonymous type cannot be.
+
+### `std::multiset<T>`
+
+A sorted collection that allows duplicates. `*begin()` is the smallest element, which is why
+it suits tracking the oldest active read snapshot: several reads may share a sequence number,
+and each must be released independently.
+
+`erase(iterator)` removes one element; `erase(value)` would remove *all* copies of it, which
+would release other reads' snapshots too.
+
+Python has no direct equivalent; `sortedcontainers.SortedList` is the closest.
+
+### `shared_ptr::use_count()`
+
+Returns how many `shared_ptr`s own the object.
+
+```cpp
+return version.use_count() == 1;  // only this list holds it
+```
+
+Useful here because the retired-versions list is the only other owner, so a count of one
+proves no reader is still searching that version. It is a blunt tool in general — the count
+can change the instant after you read it — and is only safe under a lock, as it is here.
+
+### The erase-remove idiom
+
+```cpp
+retired_.erase(std::remove_if(retired_.begin(), retired_.end(), predicate), retired_.end());
+```
+
+`std::remove_if` does not remove anything. It shuffles the elements you want to keep to the
+front and returns an iterator to where the leftovers begin; `erase` then drops that tail.
+Two steps because the algorithms cannot change a container's size, only its contents.
+
+Python: `items = [x for x in items if not predicate(x)]`.
+
+### `std::function<T(Args)>` as a parameter
+
+```cpp
+const std::function<uint64_t()>& allocate_file_number
+```
+
+Holds any callable with that signature — a lambda, a function pointer, a function object.
+Taken by const reference to avoid a copy. It lets compaction ask for a new file number
+without knowing anything about the version set that hands them out.
+
+Python: a parameter annotated `Callable[[], int]`.
+
+### Tagged binary encodings
+
+```cpp
+PutVarint32(destination, static_cast<uint32_t>(tag));
+```
+
+Each field is written as a tag followed by its payload, and the decoder switches on the tag.
+The point is forward and backward compatibility: a later phase can add a field without
+making existing MANIFESTs unreadable, because old readers see a tag they do not recognise
+rather than data at an unexpected offset. Protocol Buffers works this way.
+
+An unknown tag is treated as corruption here, which is the strict choice. Skipping unknown
+tags requires each one to carry its own length.
+
+### RAII guards for paired operations
+
+```cpp
+class ReadSnapshotGuard {
+ public:
+  ReadSnapshotGuard(DBImpl* db, uint64_t sequence) : db_(db), sequence_(sequence) {}
+  ~ReadSnapshotGuard() { db_->UnregisterReadSnapshot(sequence_); }
+};
+```
+
+The same idea as `std::lock_guard`, applied to anything that must be undone. `Get` has
+several early returns, and a forgotten unregister on any one of them would leave a snapshot
+registered forever — permanently stopping compaction from reclaiming anything above it. A
+destructor cannot be forgotten.
+
+This is the general lesson: whenever two operations must be paired, put the second one in a
+destructor rather than trusting every exit path. Python's `contextlib.contextmanager` is the
+closest equivalent.

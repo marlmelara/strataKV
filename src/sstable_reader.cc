@@ -36,6 +36,88 @@ Status ReadExactly(const RandomAccessFile& file, uint64_t offset, size_t length,
 
 }  // namespace
 
+// Walks the table block by block, in index order.
+//
+// One block is held in memory at a time, so a full scan costs one block of
+// memory rather than the whole file -- which matters because compaction opens
+// several tables at once.
+class TableIterator final : public Iterator {
+ public:
+  explicit TableIterator(const SSTableReader* reader) : reader_(reader) {}
+
+  bool Valid() const override { return valid_; }
+
+  void SeekToFirst() override {
+    block_index_ = 0;
+    valid_ = false;
+    status_ = Status::OK();
+    LoadBlock();
+  }
+
+  void Next() override {
+    if (!valid_) return;
+    if (!DecodeNextEntry()) {
+      // This block is exhausted; move to the next one.
+      ++block_index_;
+      LoadBlock();
+    }
+  }
+
+  std::string_view key() const override { return key_; }
+  std::string_view value() const override { return value_; }
+  Status status() const override { return status_; }
+
+ private:
+  // Loads blocks from block_index_ onward until one yields an entry, or the
+  // table runs out. Empty blocks cannot occur, but skipping them costs nothing
+  // and avoids a sharp edge.
+  void LoadBlock() {
+    while (block_index_ < reader_->index_.size()) {
+      if (auto s = reader_->ReadBlock(reader_->index_[block_index_], &block_); !s.ok()) {
+        status_ = s;
+        valid_ = false;
+        return;
+      }
+      cursor_ = block_;
+      if (DecodeNextEntry()) return;
+      ++block_index_;
+    }
+    valid_ = false;
+  }
+
+  // Pulls one entry out of the current block, returning false when it is spent.
+  bool DecodeNextEntry() {
+    if (cursor_.empty()) {
+      valid_ = false;
+      return false;
+    }
+    std::string_view key;
+    std::string_view value;
+    if (!GetLengthPrefixed(&cursor_, &key) || !GetLengthPrefixed(&cursor_, &value)) {
+      status_ = Status::Corruption(reader_->path_, "truncated data block entry");
+      valid_ = false;
+      return false;
+    }
+    key_ = key;
+    value_ = value;
+    valid_ = true;
+    return true;
+  }
+
+  const SSTableReader* reader_;
+  std::string block_;        // Owns the bytes key_ and value_ point into.
+  std::string_view cursor_;  // Unread remainder of block_.
+  std::string_view key_;
+  std::string_view value_;
+  size_t block_index_ = 0;
+  bool valid_ = false;
+  Status status_;
+};
+
+std::unique_ptr<Iterator> SSTableReader::NewIterator() const {
+  return std::make_unique<TableIterator>(this);
+}
+
 SSTableReader::SSTableReader(std::unique_ptr<RandomAccessFile> file, std::string path,
                              BloomFilter filter, std::vector<IndexEntry> index)
     : file_(std::move(file)),

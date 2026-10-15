@@ -6,6 +6,7 @@ target_link_libraries(stratakv_crash_helper PRIVATE stratakv)
 target_compile_options(stratakv_crash_helper PRIVATE -Wall -Wextra)
 
 add_executable(stratakv_tests
+               test_compaction.cc
                test_crash_point.cc
                test_crc32c.cc
                test_bloom.cc
@@ -15,9 +16,11 @@ add_executable(stratakv_tests
                test_filename.cc
                test_internal_key.cc
                test_memtable.cc
+               test_merging_iterator.cc
                test_skiplist.cc
                test_sstable.cc
                test_status.cc
+               test_version.cc
                test_wal.cc
                test_write_batch.cc)
 

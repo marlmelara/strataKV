@@ -62,6 +62,28 @@ so they are recorded the same way.
 | clang-tidy, curated checks | 0 diagnostics | `./tools/run-clang-tidy.sh build/debug` | M1 | 2026-10-15 |
 | Concurrent reads during repeated flushes | 20/20 consecutive runs, 0 TSan reports | `for i in $(seq 1 20); do ctest --preset tsan -R 'Flush\|CrashPoints' -E OneMillionKeys; done` | M1 | 2026-10-15 |
 
+### P3
+
+| Result | Value | Command | Machine | Date |
+| --- | --- | --- | --- | --- |
+| 5,000,000 operations vs a reference `std::map` | matched exactly across 360,035 surviving keys | `ctest --preset debug -R MillionsOfOperationsMatchAReferenceMap` | M1 | 2026-10-15 |
+| Space amplification after compaction | **1.44x** (13,514,830 bytes on disk, 9,360,910 bytes live) | same test, prints the ratio | M1 | 2026-10-15 |
+| 5,000,000-operation run time | 35.2 s | same test | M1 | 2026-10-15 |
+| Crash during compaction, every acknowledged write recovered | passed for `compaction_after_output` and `compaction_before_manifest` | `ctest --preset debug -R AcceptanceCompactionCrashPoints` | M1 | 2026-10-15 |
+| clang-tidy, curated checks | 0 diagnostics | `./tools/run-clang-tidy.sh build/debug` | M1 | 2026-10-15 |
+| Reads and compactions overlapping | 15/15 consecutive runs, 0 TSan reports | `for i in $(seq 1 15); do ctest --preset tsan -R 'Readers\|Compaction' -E Millions; done` | M1 | 2026-10-15 |
+
+On the 1.44x: the requirement is 1.5x, so the margin is thin and worth understanding rather
+than celebrating. The denominator counts only raw key and value bytes, while the files also
+carry an 8-byte internal-key trailer per entry (about 2.9 MB over 360,035 keys), plus a bloom
+filter, an index, and a footer per file, plus any L0 files not yet compacted. Most of the
+overhead is the format itself rather than uncollected garbage, which also means more
+aggressive compaction would not move the figure much.
+
+The 5,000,000-operation test is skipped under ASan and TSan. It is a volume test, and
+instrumented it would add roughly half an hour to every sweep; the tests that are about
+races and memory errors run under both sanitizers at a size that finishes.
+
 The measured 0.729% sits just under the ~0.8% the theory predicts for 10 bits per key with
 7 probes, which is the expected result: the filter is slightly larger than the exact
 bits-per-key figure because its size is rounded up to whole bytes.

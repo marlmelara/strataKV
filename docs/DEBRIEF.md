@@ -516,3 +516,205 @@ start in P4.
 ### Gate
 
 Suspended; see [STUDY.md](STUDY.md).
+
+---
+
+## P3 — MANIFEST, versions, and compaction
+
+### What was built
+
+Compaction, and the bookkeeping that makes it safe. Once four L0 files exist they are merged
+with the overlapping L1 files and rewritten as fresh non-overlapping L1 files, dropping
+versions a newer write has replaced and tombstones that have nothing left to hide. A MANIFEST
+records every change to the file set as an appended edit, and CURRENT names the live MANIFEST,
+replaced by the four-step write-sync-rename-sync dance. Reads hold a reference-counted
+immutable Version, so files cannot be deleted underneath them, and in-flight read snapshots
+are registered so compaction never drops a version a live read still needs.
+
+### The files that matter
+
+| File | What it does |
+| --- | --- |
+| [src/compaction.cc](../src/compaction.cc) | The merge and the drop rule -- the hardest logic in the project, and the only place that decides what is allowed to stop existing |
+| [src/version.cc](../src/version.cc) | VersionEdit encoding, the MANIFEST, the four-step CURRENT replacement, and the reference counting that keeps a reader's files alive |
+| [src/db_impl.cc](../src/db_impl.cc) | Rewired onto the version set; adds the read-snapshot registry and obsolete-file deletion |
+| [src/merging_iterator.cc](../src/merging_iterator.cc) | k-way merge with a min-heap, so all versions of one key arrive together, newest first |
+| [src/iterator.h](../src/iterator.h) | One cursor interface, so the merge does not care whether an input is a table on disk or a memtable |
+
+### Decisions the spec did not dictate
+
+| Decision | Chose | Alternative considered | Why the alternative lost |
+| --- | --- | --- | --- |
+| Protecting in-flight reads from compaction | Register every read's snapshot in a multiset; compaction never drops a version at or above the oldest one | Drop every shadowed version, as the teaching snippet does | The snippet is correct for a database with no concurrent reads. Here, a read captures its snapshot and then searches without a lock, so a write plus a completed compaction can happen underneath it. Dropping the version it needed makes an existing key read as **NotFound** -- a silent wrong answer. Costs one multiset insert and erase per read |
+| Where open readers live | Inside the Version, alongside the file metadata | A separate table cache keyed by file number, as LevelDB has | Keeps everything in `version.{h,cc}` as the spec's layout specifies, and makes "a reader holds a Version so its files cannot be deleted" literally true rather than a convention. A cache would be better once there are many levels |
+| Splitting compaction output | Only at a user-key boundary | Split whenever the target size is reached | Two L1 files both holding one user key would overlap, and the read path binary searches L1 assuming no overlap. The bug would be silently missing data, not a crash |
+| MANIFEST framing | Reuse the WAL's record framing, factored into `ReplayRecords` | A second record reader for the MANIFEST | The spec says "the same record framing as the WAL". Reusing it also reuses the torn-tail and mid-file-corruption rules, which took real thought to get right in P1 and would have drifted if reimplemented |
+| MANIFEST lifetime | Start a fresh MANIFEST on every open, beginning with a snapshot of the whole state | Append to the existing one forever | A MANIFEST appended to across thousands of restarts grows without bound and makes recovery slower every time. A fresh one costs one snapshot record |
+| Sequence watermark | Kept from P2 | Removed, now that the MANIFEST records the last sequence | The MANIFEST's last sequence is only as current as the newest edit; a log may hold acknowledged writes the MANIFEST has not seen. Both are needed, and they take the maximum |
+| Obsolete file deletion | Scan the directory and delete anything no live version references | Track deletions explicitly in the edit | The scan is simple and self-correcting: it also cleans up outputs of a compaction that crashed before its MANIFEST record landed, which an explicit list would miss |
+| Compaction scheduling | The same background thread as the flush, flush first | A second thread | One thread means flush and compaction can never race each other for the same files, and the ordering is obvious. A second thread is a P4 concern if throughput demands it |
+| The 5,000,000-operation test under sanitizers | Skipped, with an explanatory message | Run it everywhere | Instrumented it would add roughly half an hour to every sweep, and it is a volume test. The tests that are actually about races and memory errors run under both sanitizers at a size that finishes |
+
+### Bugs that took more than one attempt
+
+Three, and each was a genuine defect rather than a slip.
+
+**1. `RemoveObsoleteFiles` deleted the MANIFEST it had just written.** The worst of the
+three. The cutoff for which MANIFESTs to keep was compared against `next_file_number_`
+instead of the number of the live MANIFEST, so the file CURRENT pointed at was always
+below the cutoff and always deleted. The symptom was spectacular and immediate -- every
+reopen failed with "MANIFEST contains no usable edits", taking twelve tests down with it --
+which is the good case. Had the comparison been wrong in the other direction, old MANIFESTs
+would have accumulated silently forever.
+
+**2. The compaction held a reference to the version it was obsoleting.** `RunCompaction`
+copied `current_` into a local `shared_ptr`, did its work, and then asked for obsolete files
+to be deleted -- while still holding that local reference. Since holding a Version is
+*precisely* the mechanism that keeps its files alive, the compaction was sparing exactly the
+files it had just made redundant. Twenty-two tables sat on disk where the version referenced
+far fewer.
+
+This one is worth dwelling on because nothing was broken: the reference counting did exactly
+what it is designed to do. The caller was wrong, not the mechanism. The fix is one line --
+`version.reset()` before the cleanup -- and a comment explaining why it cannot be left to
+the end of the function. `ObsoleteFilesAreDeletedAfterCompaction` is the test that caught it.
+
+**3. The space-reclamation test measured nothing.** It wrote forty generations of the same
+200 keys, waited for background work, measured, compacted, and measured again -- but waiting
+for background work *is* waiting for compaction, so the "before" measurement was already
+compacted and the second compaction found an empty L0 and did nothing. The test asserted
+`after < before` and failed, correctly, by being meaningless. Fixed by holding automatic
+compaction off with a high trigger so the measurement has something to measure, and by
+asserting there is more than one L0 file first, so the test cannot pass vacuously again.
+
+**Also worth recording: thirteen test failures that were adaptation, not breakage.** Adding
+the MANIFEST shifted every file number by one, so tests hardcoding `000001.log` broke; and
+compaction now drains L0, so tests asserting `L0 > 1` broke. Both were real behavior changes
+and the tests were updated to match -- the log path is now discovered rather than hardcoded,
+and the level assertions ask about total files rather than L0 specifically.
+
+### Measured numbers
+
+The acceptance run: 5,000,000 operations over a 400,000-key space with 10% deletes, compared
+against a reference `std::map` of 360,035 surviving keys -- every one present with the right
+value, every deleted key absent.
+
+**Space amplification came out at 1.44x**, inside the required 1.5x but not by much. That
+margin is worth understanding rather than celebrating: the denominator is the raw key and
+value bytes, while the files also carry an 8-byte internal-key trailer per entry (about
+2.9 MB across 360,035 keys), plus a bloom filter, an index, and a footer per file, plus any
+L0 files not yet compacted. Most of the 1.44x is unavoidable format overhead rather than
+garbage, which also means the figure would not improve much with more aggressive compaction.
+
+### Found by the post-phase verification pass
+
+Four gaps, and one genuinely surprising result.
+
+**The MANIFEST had never been damaged in a test.** It is now the authoritative record of
+what the database consists of -- more load-bearing than any single log -- and nothing
+checked what happens when it is truncated or empty. Three tests now cover it: a torn tail is
+dropped and recovery lands on the last complete edit (verified by asserting the recovered
+log number is the fourth edit's, not the fifth's), an empty MANIFEST is reported as
+corruption, and a MANIFEST that CURRENT names but which is missing does not open as a
+silently empty database.
+
+**Orphaned compaction outputs were not checked.** A compaction that crashes before its
+MANIFEST record lands leaves tables nothing references. If they were not cleaned up, every
+crash during a compaction would leak disk space permanently.
+`OrphanedCompactionOutputsAreDeletedOnOpen` pins it.
+
+**A file the MANIFEST lists but which is missing** is a real inconsistency now that the
+MANIFEST is authoritative -- in P2 the directory scan simply would not have seen it. It must
+be reported, not opened with a hole in it.
+
+**The surprising one: my end-to-end test for the read-snapshot registry does not actually
+test it.** I wrote a test with four readers, a writer churning versions, and repeated
+compactions, on the theory that a broken registry would show up as a key reading as absent.
+Then I disabled the registry to check the test detected its absence.
+
+**It passed anyway.**
+
+The window is simply too narrow to hit by chance. For a reader to be harmed, a write has to
+land after it captures its snapshot *and* a whole compaction has to finish before the read
+does -- and a read completes in microseconds while a compaction takes milliseconds. Running
+the system and hoping to race into it is not a strategy.
+
+I had written "without the registry this fails; verified by removing it" in the test comment
+*before* checking. That was an unverified claim, and it was wrong. The comment now says what
+is actually true: the test is a useful smoke test for the concurrent paths, and the
+deterministic unit tests -- `KeepsAShadowedVersionThatALiveSnapshotStillNeeds` and
+`KeepsATombstoneALiveSnapshotStillNeeds` -- are what justify the registry, because they
+assert the rule directly instead of hoping to observe its absence.
+
+The lesson generalizes well beyond this project: **a correctness rule that only matters in a
+rare interleaving must be tested by asserting the rule, not by exercising the system.** The
+integration test tells you the parts fit together; only the unit test tells you the rule is
+right.
+
+### Still not covered, deliberately
+
+**The flush- and compaction-failure branches.** Both set `background_error_` and stop
+accepting writes. Triggering them needs a fault-injection hook in `Env`, which is worth
+adding when P4 touches these paths again rather than bolting on now. Reviewed, not tested,
+and said so rather than implied.
+
+**A reader holding a Version for a very long time.** Files it references cannot be deleted,
+so a pathologically slow reader delays reclamation. That is the intended trade-off, but
+nothing bounds it, and nothing tests it.
+
+### One unresolved observation
+
+A four-preset sweep reported a single test failure under `debug` and `release` but not under
+either sanitizer. It has not reproduced since: seven consecutive clean runs of the full
+212-test suite, plus 15/15 under the TSan concurrency stress, plus a later clean sweep.
+
+The likely cause is self-inflicted. A second `ctest` was running against the same build
+directory at the time, so two suites were competing for CPU, and the timing-sensitive
+concurrency tests are the first to suffer from that. The honest position, though, is that it
+cannot be proven: the sweep captured only the summary line, not the name of the failing
+test, which was a mistake in how the command was written. The sweep now records failing test
+names so a recurrence is diagnosable rather than a mystery.
+
+Worth stating rather than quietly dropping. If it reappears in CI, the name will be in the
+log and this note is where to start.
+
+### Five questions
+
+1. `LogAndApply` writes the MANIFEST record and syncs it *before* installing the new version.
+   What state is on disk if the process dies between those two steps, and why is it safe?
+2. A read captures snapshot 15. A write then lands at sequence 20, and a compaction runs.
+   What would go wrong without the read-snapshot registry, and why is the symptom worse than
+   a crash?
+3. Compaction output is split at ~8 MB, but only when a new user key begins. What breaks if
+   it splits mid-key?
+4. `RunCompaction` calls `version.reset()` before asking for obsolete files to be deleted.
+   What happens without that line, and why is the mechanism not at fault?
+5. Why does a fresh MANIFEST get written on every open instead of appending to the existing
+   one forever?
+
+#### Answers
+
+1. The MANIFEST holds the new edit but `current_` still points at the old version. Nothing
+   is lost: the next open replays the MANIFEST and arrives at the new version. The reverse
+   order would be unsafe -- a version referencing files the MANIFEST does not list would
+   vanish on restart, and the files it added would look like garbage and be deleted.
+2. Compaction would see version 20 shadowing version 10 and drop version 10. The read then
+   seeks to `(K, 15)`, skips version 20 as too new, finds nothing below, and reports
+   **NotFound for a key that exists**. It is worse than a crash because nothing fails: the
+   database returns a confident wrong answer.
+3. Both output files would contain the same user key, so their key ranges overlap. L1 files
+   are required never to overlap, and the read path binary searches L1 on that assumption --
+   so it would find one file, miss the version in the other, and silently return stale data
+   or nothing.
+4. The local `shared_ptr` keeps the old version alive, its files count as live, and the files
+   the compaction just made obsolete are spared -- disk usage grows with every compaction.
+   The mechanism is working exactly as intended: holding a Version is how a reader protects
+   its files. The caller simply has to stop being a reader before asking for cleanup.
+5. An appended MANIFEST grows without bound across restarts, and recovery replays all of it,
+   so every open gets slower forever. A fresh MANIFEST starts with one snapshot record
+   describing the whole current state, so recovery cost stays proportional to the data rather
+   than to the number of times the database has been opened.
+
+### Gate
+
+Suspended; see [STUDY.md](STUDY.md).
