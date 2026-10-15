@@ -1,0 +1,43 @@
+# Build output
+build/
+out/
+cmake-build-*/
+_deps/
+CMakeFiles/
+CMakeCache.txt
+cmake_install.cmake
+Makefile
+compile_commands.json
+*.o
+*.a
+*.so
+*.dylib
+
+# Python
+__pycache__/
+*.py[cod]
+*.egg-info/
+.eggs/
+dist/
+wheelhouse/
+.venv/
+venv/
+.pytest_cache/
+.hypothesis/
+.ruff_cache/
+*.so.dSYM/
+
+# Benchmark + test scratch
+bench/results/*.png
+bench/results/*.json
+*.sst
+*.log
+MANIFEST-*
+CURRENT
+LOCK
+
+# Editors / OS
+.DS_Store
+.idea/
+.vscode/
+*.swp
