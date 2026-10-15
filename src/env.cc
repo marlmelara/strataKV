@@ -60,7 +60,8 @@ Status FullSyncFd(int fd, const std::string& path) {
 
 class PosixWritableFile final : public WritableFile {
  public:
-  PosixWritableFile(int fd, std::string path) : fd_(fd), path_(std::move(path)) {}
+  PosixWritableFile(int fd, std::string path, uint64_t size = 0)
+      : fd_(fd), path_(std::move(path)), size_(size) {}
 
   ~PosixWritableFile() override {
     if (fd_ >= 0) ::close(fd_);  // Nothing useful to do with a close error here.
@@ -110,8 +111,44 @@ class PosixWritableFile final : public WritableFile {
  private:
   int fd_;
   std::string path_;
-  uint64_t size_ = 0;
+  uint64_t size_;
   Status sync_error_;
+};
+
+class PosixRandomAccessFile final : public RandomAccessFile {
+ public:
+  PosixRandomAccessFile(int fd, std::string path, uint64_t size)
+      : fd_(fd), path_(std::move(path)), size_(size) {}
+
+  ~PosixRandomAccessFile() override {
+    if (fd_ >= 0) ::close(fd_);
+  }
+
+  // pread does not use or move a file cursor, so concurrent calls on one
+  // descriptor are safe and need no lock.
+  Status ReadAt(uint64_t offset, uint8_t* dst, size_t n, size_t* got) const override {
+    size_t total = 0;
+    while (total < n) {
+      const ssize_t result =
+          ::pread(fd_, dst + total, n - total, static_cast<off_t>(offset + total));
+      if (result < 0) {
+        if (errno == EINTR) continue;
+        *got = total;
+        return PosixError(path_, errno);
+      }
+      if (result == 0) break;  // End of file.
+      total += static_cast<size_t>(result);
+    }
+    *got = total;
+    return Status::OK();
+  }
+
+  uint64_t Size() const override { return size_; }
+
+ private:
+  int fd_;
+  std::string path_;
+  uint64_t size_;
 };
 
 class PosixFileLock final : public FileLock {
@@ -138,6 +175,44 @@ class PosixEnv final : public Env {
     const int fd = ::open(path.c_str(), O_WRONLY | O_CREAT | O_TRUNC, kFileMode);
     if (fd < 0) return PosixError(path, errno);
     *out = std::make_unique<PosixWritableFile>(fd, path);
+    return Status::OK();
+  }
+
+  Status NewAppendableFile(const std::string& path, std::unique_ptr<WritableFile>* out) override {
+    const int fd = ::open(path.c_str(), O_WRONLY | O_CREAT | O_APPEND, kFileMode);
+    if (fd < 0) return PosixError(path, errno);
+
+    // Seed the in-memory size from the file on disk so Size() stays truthful
+    // across a reopen.
+    struct ::stat info{};
+    if (::fstat(fd, &info) != 0) {
+      const Status s = PosixError(path, errno);
+      ::close(fd);
+      return s;
+    }
+    *out = std::make_unique<PosixWritableFile>(fd, path, static_cast<uint64_t>(info.st_size));
+    return Status::OK();
+  }
+
+  Status NewRandomAccessFile(const std::string& path,
+                             std::unique_ptr<RandomAccessFile>* out) override {
+    const int fd = ::open(path.c_str(), O_RDONLY);
+    if (fd < 0) return PosixError(path, errno);
+
+    struct ::stat info{};
+    if (::fstat(fd, &info) != 0) {
+      const Status s = PosixError(path, errno);
+      ::close(fd);
+      return s;
+    }
+    *out = std::make_unique<PosixRandomAccessFile>(fd, path, static_cast<uint64_t>(info.st_size));
+    return Status::OK();
+  }
+
+  Status TruncateFile(const std::string& path, uint64_t size) override {
+    if (::truncate(path.c_str(), static_cast<off_t>(size)) != 0) {
+      return PosixError(path, errno);
+    }
     return Status::OK();
   }
 

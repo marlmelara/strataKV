@@ -5,10 +5,11 @@ C++20 engine, Python package, crash fuzzer, and benchmarks. In one sentence: a t
 RocksDB — you `put`, `get`, and `delete` keys, every acknowledged write survives
 `kill -9`, and reads stay fast as data grows past memory.
 
-> **Status: P0 of 7 complete.** The scaffold, the OS layer, and CI are in place. The
-> write-ahead log, memtable, SSTables, compaction, and the Python `DB` class land in
-> P1–P5. There are no benchmark numbers in this README yet because none have been
-> measured — see [docs/NUMBERS.md](docs/NUMBERS.md).
+> **Status: P1 of 7 complete.** The write path is real: every acknowledged write reaches
+> a checksummed write-ahead log and is `fsync`ed before `Put` returns, and recovery
+> rebuilds state from that log. SSTables, compaction, group commit, and the Python `DB`
+> class land in P2–P5. There are no benchmark numbers in this README yet because none have
+> been measured — see [docs/NUMBERS.md](docs/NUMBERS.md).
 
 ## What works today
 
@@ -19,6 +20,11 @@ RocksDB — you `put`, `get`, and `delete` keys, every acknowledged write surviv
 | `Env` | [src/env.h](src/env.h) | Every syscall the engine makes: append, `fsync`, rename, directory `fsync`, `flock` |
 | `crc32c` | [src/crc32c.h](src/crc32c.h) | Hand-written CRC32C, compile-time table, no dependency |
 | `stratakv.version()` | [python/stratakv/\_\_init\_\_.py](python/stratakv/__init__.py) | Proves the full build chain: CMake → pybind11 → wheel → `import stratakv` |
+| `DB` | [include/stratakv/db.h](include/stratakv/db.h) | `Open`, `Put`, `Get`, `Delete`, `Write(batch)`, `Close`, with a `LOCK` file so two processes cannot open one database |
+| `WriteBatch` | [include/stratakv/write_batch.h](include/stratakv/write_batch.h) | A group of writes that becomes one WAL record with one checksum, so it replays entirely or not at all |
+| WAL | [src/wal_writer.h](src/wal_writer.h), [src/wal_reader.h](src/wal_reader.h) | Checksummed records; a torn tail is truncated, mid-file damage is reported as `Corruption` |
+| Memtable | [src/memtable.h](src/memtable.h), [src/skiplist.h](src/skiplist.h) | Skip list with one writer and any number of lock-free readers |
+| Crash points | [src/crash_point.h](src/crash_point.h) | `STRATAKV_CRASH_AT=<name>` kills the process at a named moment in the write path |
 
 ## Building
 

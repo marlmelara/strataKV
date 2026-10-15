@@ -10,7 +10,7 @@ namespace stratakv {
 // kSyncEveryWrite is the default because the project's central claim is that no
 // acknowledged write is ever lost. Group commit (P4) shares one fsync across
 // queued writers, which is what makes this policy affordable.
-enum class SyncPolicy {
+enum class SyncPolicy : uint8_t {
   kSyncEveryWrite = 0,
   kNoSync,
 };

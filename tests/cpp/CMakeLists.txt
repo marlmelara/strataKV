@@ -1,7 +1,14 @@
 add_executable(stratakv_tests
+               test_crash_point.cc
                test_crc32c.cc
+               test_db.cc
                test_env.cc
-               test_status.cc)
+               test_internal_key.cc
+               test_memtable.cc
+               test_skiplist.cc
+               test_status.cc
+               test_wal.cc
+               test_write_batch.cc)
 
 target_link_libraries(stratakv_tests PRIVATE stratakv GTest::gtest_main)
 

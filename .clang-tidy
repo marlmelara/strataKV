@@ -32,7 +32,9 @@ Checks: >
   -misc-include-cleaner,
   -misc-non-private-member-variables-in-classes,
   -misc-use-internal-linkage,
-  -misc-use-anonymous-namespace
+  -misc-use-anonymous-namespace,
+  -misc-const-correctness,
+  -bugprone-empty-catch
 
 # Excluded, with reasons:
 #
@@ -64,6 +66,16 @@ Checks: >
 #   misc-use-anonymous-namespace
 #     Fire on crc32c::Value and crc32c::Extend, which are declared in crc32c.h
 #     and used by the tests, so internal linkage would break the build.
+#
+#   misc-const-correctness
+#     Suggests const-qualifying the pointee of a pointer that a function's whole
+#     contract is to hand back as writable memory, such as Arena::Allocate's
+#     return value. Taking the advice would not compile.
+#
+#   bugprone-empty-catch
+#     DBImpl's destructor has to swallow whatever Close() throws, because a
+#     destructor may not let an exception escape and there is nowhere to report
+#     one. The empty handler is the point, not an oversight.
 #
 #   readability-identifier-length, readability-magic-numbers
 #     `fd`, `n`, `i` are clearer than any longer name, and file modes like 0644

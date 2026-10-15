@@ -29,10 +29,18 @@ option(STRATAKV_WERROR "Treat compiler warnings as errors" OFF)
 # Env, CRC32C, and the version string.
 # ---------------------------------------------------------------------------
 add_library(stratakv
+            src/arena.cc
+            src/crash_point.cc
             src/crc32c.cc
+            src/db_impl.cc
             src/env.cc
+            src/internal_key.cc
+            src/memtable.cc
             src/status.cc
-            src/version.cc)
+            src/version.cc
+            src/wal_reader.cc
+            src/wal_writer.cc
+            src/write_batch.cc)
 
 target_include_directories(stratakv
                            PUBLIC $<BUILD_INTERFACE:${CMAKE_CURRENT_SOURCE_DIR}/include>

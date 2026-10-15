@@ -19,3 +19,19 @@ Each phase appends the terms it introduced.
 | scikit-build-core | The Python build backend that makes `pip install .` run CMake and place the compiled `.so` inside the Python package | `pyproject.toml`, `[tool.scikit-build]` |
 | Short write | When `write()` accepts fewer bytes than you asked for, which is legal and must be looped over. Ignoring it silently truncates data | `WriteFully` in `src/env.cc` |
 | Translation unit | One `.cc` file plus everything it includes — the unit the compiler actually processes. Explains why a header included twice would be an error without `#pragma once` | Every `.cc` in `src/` |
+
+## P1
+
+| Term | Plain-English meaning | Where it shows up |
+| --- | --- | --- |
+| Acquire load | A read of an atomic that also guarantees you see everything the writer wrote before its release store | `FindGreaterOrEqual` |
+| Arena (bump allocator) | Hands out pieces of big blocks by advancing a cursor, and frees every block at once. No individual frees, which is what makes lock-free reads safe | `src/arena.h` |
+| Internal key | A user key plus an 8-byte trailer of sequence number and type. What is actually stored and sorted | `src/internal_key.h` |
+| Placement new | Constructing an object in memory you already own, instead of allocating | `SkipList::NewNode` |
+| Publication | The single release store that makes a fully built node reachable by readers | `SkipList::Insert` |
+| Release store | A write to an atomic that publishes everything written before it to any acquire load that sees the value | `SkipList::Insert` |
+| Sequence number | A monotonically increasing counter stamped on every operation. It is what "newer" means, and what a snapshot is measured against | Assigned in `DBImpl::Write` |
+| Snapshot | A sequence number a read is pinned to, so writes newer than it stay invisible | `DBImpl::Get` |
+| Torn record | A WAL record only partly written when the process died. Normal after a crash, never an error, because it was never acknowledged | `WalReader::Replay` |
+| Trailer | The 8 bytes appended to every user key: 7 of sequence number, 1 of type | `PackSequenceAndType` |
+| WriteBatch | A group of operations that becomes one WAL record with one checksum, so it replays entirely or not at all | `include/stratakv/write_batch.h` |

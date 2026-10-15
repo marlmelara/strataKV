@@ -49,6 +49,25 @@ class WritableFile {
   }
 };
 
+// A file opened for positional reads. Used by WAL replay and, from P2, by
+// SSTable lookups. Reads are thread-safe and stateless: there is no file
+// cursor, so several threads may read one file at once.
+class RandomAccessFile {
+ public:
+  RandomAccessFile() = default;
+  virtual ~RandomAccessFile() = default;
+
+  RandomAccessFile(const RandomAccessFile&) = delete;
+  RandomAccessFile& operator=(const RandomAccessFile&) = delete;
+
+  // Reads up to `n` bytes at `offset` into `dst`, setting *got to how many
+  // arrived. A successful call with *got < n means the file ended early, which
+  // for the WAL is the normal shape of a crash rather than an error.
+  virtual Status ReadAt(uint64_t offset, uint8_t* dst, size_t n, size_t* got) const = 0;
+
+  virtual uint64_t Size() const = 0;
+};
+
 // Holds the database's LOCK file. Releasing is tied to the object's lifetime
 // (RAII), so a lock cannot be leaked by an early return: destroying the
 // FileLock unlocks and closes the file.
@@ -76,6 +95,15 @@ class Env {
   // Creates `path`, truncating it if it already exists.
   virtual Status NewWritableFile(const std::string& path, std::unique_ptr<WritableFile>* out) = 0;
 
+  // Opens `path` for appending, keeping whatever it already holds, and creating
+  // it if missing. This is how a recovered WAL is reopened: in P1 the WAL is
+  // the only durable copy of the data, so it must be continued rather than
+  // replaced.
+  virtual Status NewAppendableFile(const std::string& path, std::unique_ptr<WritableFile>* out) = 0;
+
+  virtual Status NewRandomAccessFile(const std::string& path,
+                                     std::unique_ptr<RandomAccessFile>* out) = 0;
+
   // Writes `contents` as the entire file. Does not sync; callers that need
   // durability follow this with SyncFile and, for a new name, SyncDir.
   virtual Status WriteFile(const std::string& path, std::string_view contents) = 0;
@@ -95,6 +123,10 @@ class Env {
   virtual Status Rename(const std::string& from, const std::string& to) = 0;
 
   virtual Status RemoveFile(const std::string& path) = 0;
+
+  // Shortens an existing file in place, keeping the first `size` bytes. WAL
+  // recovery uses this to drop a torn tail without rewriting the file.
+  virtual Status TruncateFile(const std::string& path, uint64_t size) = 0;
 
   virtual Status CreateDirIfMissing(const std::string& path) = 0;
 

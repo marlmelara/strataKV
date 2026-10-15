@@ -144,3 +144,123 @@ every field, so there is no reading of uninitialized memory if a call fails part
 `fd_`, `path_`, `size_`, `sync_error_`. A convention, not a language feature: it makes it
 obvious at a glance that a name is a member variable rather than a local or a parameter.
 Python's equivalent is the explicit `self.`.
+
+## P1
+
+### `std::atomic<T>` and memory ordering
+
+A value several threads may read and write without a lock.
+
+```cpp
+std::atomic<Node*> next;
+next.store(node, std::memory_order_release);   // publish
+Node* n = next.load(std::memory_order_acquire); // observe
+```
+
+The orderings are promises about *other* memory, not about the atomic itself:
+
+- **release** on a store: everything this thread wrote before the store is visible to any
+  thread that performs an acquire load of the same variable and sees this value.
+- **acquire** on a load: everything the storing thread wrote before its release store is
+  visible to this thread afterwards.
+- **relaxed**: atomic, but with no ordering promise at all. Only safe when nothing else
+  depends on the order, as when setting a brand-new node's own pointers before anyone can
+  reach it.
+
+Python has no equivalent, because the GIL makes the problem invisible.
+
+### Placement `new`
+
+Constructs an object in memory you already have, rather than allocating.
+
+```cpp
+char* memory = arena_->Allocate(sizeof(Node), alignof(Node));
+auto* node = new (memory) Node{key, value, height, next_array};
+```
+
+`new (address) Type{...}` runs the constructor at that address and allocates nothing. It is
+how an arena hands out typed objects. The matching `delete` is never called here: the
+objects are trivially destructible and the whole arena is released at once.
+
+### Abstract classes as callbacks
+
+```cpp
+class WriteBatch::Handler {
+ public:
+  virtual Status Put(std::string_view key, std::string_view value) = 0;
+  virtual Status Delete(std::string_view key) = 0;
+};
+```
+
+`= 0` makes a function *pure virtual*: it has no body and the class cannot be instantiated.
+A subclass must supply one. This is C++'s interface, used here so the same decoder can feed
+a live memtable, a recovery pass, or a test that just records what it saw.
+
+Python's closest equivalent is an abstract base class, or simply passing a function.
+
+### `std::mutex` and `std::lock_guard`
+
+```cpp
+const std::lock_guard<std::mutex> guard(mutex_);
+```
+
+The constructor locks and the destructor unlocks, so the lock is released on every exit
+path including an early `return`. Python's `with lock:` is the same idea, except this needs
+no special syntax. A `mutable` mutex is one a `const` method may still lock, since locking
+is not a logical change to the object.
+
+### `std::shared_ptr<T>`
+
+Reference-counted shared ownership — the model every Python object already uses. The object
+dies when the last pointer to it does. Used for the memtable so that from P2 a reader can
+keep searching an old memtable while a flush installs a new one.
+
+### `std::span<const uint8_t>`
+
+A non-owning view of a contiguous byte range: a pointer and a length. Like a `memoryview`
+over `bytes`. It makes "here are some bytes" a single parameter without implying who owns
+them.
+
+### Nested classes and forward declarations inside a class
+
+`SkipList::Iterator` is a class declared inside another. It can reach the outer class's
+private members, which is why an iterator can walk private nodes.
+
+The trap: a nested class that holds a `Node*` must come *after* at least a declaration of
+`Node`. Writing `struct Node* node_;` before `Node` exists does not error — it quietly
+declares a new incomplete type. The fix is a forward declaration:
+
+```cpp
+class SkipList {
+ private:
+  struct Node;      // declared here...
+ public:
+  class Iterator { Node* node_ = nullptr; };
+ private:
+  struct Node { ... };  // ...defined here
+};
+```
+
+Member function *bodies* written inside the class body are exempt, because they are
+compiled as though the class were already complete.
+
+### Destructors must not let exceptions escape
+
+```cpp
+DBImpl::~DBImpl() {
+  try {
+    (void)Close();
+  } catch (...) {
+  }
+}
+```
+
+If an exception leaves a destructor while another exception is already propagating, the
+program terminates. A destructor therefore swallows everything — and because it cannot
+report a failure, anything whose errors matter needs an explicit method like `Close()` that
+a caller can check. Python's `__del__` has the same problem and simply prints the error.
+
+### `enum class Name : uint8_t`
+
+Fixes the enum's underlying integer type. Without it the compiler picks `int`, four bytes,
+which is wasteful inside a struct that exists in large numbers.

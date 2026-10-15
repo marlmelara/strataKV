@@ -25,6 +25,8 @@ Referenced below as **M1** so each row does not have to repeat it.
 
 ## Correctness results
 
+### P0
+
 These are pass/fail facts, not performance numbers, but they are what the project claims,
 so they are recorded the same way.
 
@@ -38,6 +40,16 @@ so they are recorded the same way.
 | CRC32C known-answer, `"123456789"` | `0xE3069283` | `ctest --preset debug -R Crc32c.MatchesKnownAnswers` | M1 | 2026-10-15 |
 | clang-tidy, curated checks | 0 diagnostics | `./tools/run-clang-tidy.sh build/debug` | M1 | 2026-10-15 |
 | CI, all 13 jobs | passed on Ubuntu and macOS | push to `main`, [run 38786203847](https://github.com/marlmelara/strataKV/actions/runs/38786203847) | GitHub Actions `ubuntu-latest` + `macos-latest` | 2026-10-15 |
+
+### P1
+
+| Result | Value | Command | Machine | Date |
+| --- | --- | --- | --- | --- |
+| C++ tests, all four presets | 111/111 passed each, 0 sanitizer reports | `for p in debug release asan tsan; do cmake --preset $p && cmake --build --preset $p && ctest --preset $p; done` | M1 | 2026-10-15 |
+| 10,000 keys recovered after a torn final WAL record | all complete records recovered | `ctest --preset debug -R DBTest.TenThousandKeysSurviveATornFinalRecord` | M1 | 2026-10-15 |
+| One corrupt byte in a middle WAL record | detected, open refused | `ctest --preset debug -R DBTest.OneCorruptByteInAMiddleRecordIsDetected` | M1 | 2026-10-15 |
+| Lock-free readers alongside one writer | 0 TSan reports | `ctest --preset tsan -R SkipListTest.ReadersScanSafelyWhileOneWriterInserts` | M1 | 2026-10-15 |
+| clang-tidy, curated checks | 0 diagnostics | `./tools/run-clang-tidy.sh build/debug` | M1 | 2026-10-15 |
 
 The CI row is what satisfies P0's third acceptance criterion. It covers all four presets on
 both operating systems, the Python package on 3.11 and 3.13, and the lint job. Note that

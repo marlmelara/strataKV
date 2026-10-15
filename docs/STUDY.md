@@ -52,7 +52,7 @@ then Python and testing.
 | Phase | What it covers | Learning guide | Quiz questions | Studied |
 | --- | --- | --- | --- | --- |
 | P0 | Build system, `Status`, `Options`, `Env`, CRC32C | [P0-scaffold-and-ci.md](learning/P0-scaffold-and-ci.md) | Spec quiz tab + [debrief](DEBRIEF.md#five-questions) | [ ] |
-| P1 | WAL, memtable, skip list, crash recovery | _pending_ | | [ ] |
+| P1 | WAL, memtable, skip list, crash recovery | [P1-wal-memtable-recovery.md](learning/P1-wal-memtable-recovery.md) | Spec quiz tab + [debrief](DEBRIEF.md) | [ ] |
 | P2 | SSTables, bloom filters, flush, read path | _pending_ | | [ ] |
 | P3 | MANIFEST, versions, compaction, merging iterator | _pending_ | | [ ] |
 | P4 | Concurrency and group commit | _pending_ | | [ ] |
