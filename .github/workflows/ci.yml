@@ -1,0 +1,115 @@
+name: CI
+
+on:
+  push:
+    branches: [main]
+  pull_request:
+  workflow_dispatch:
+
+concurrency:
+  group: ${{ github.workflow }}-${{ github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  # Every preset on every OS. Correctness is not "it builds" -- it is "it
+  # passes under the sanitizers", so asan and tsan are gating, not optional.
+  cpp:
+    name: C++ ${{ matrix.preset }} on ${{ matrix.os }}
+    runs-on: ${{ matrix.os }}
+    strategy:
+      fail-fast: false
+      matrix:
+        os: [ubuntu-latest, macos-latest]
+        preset: [debug, release, asan, tsan]
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Install Ninja (Linux)
+        if: runner.os == 'Linux'
+        run: sudo apt-get update && sudo apt-get install -y ninja-build
+
+      - name: Install Ninja (macOS)
+        if: runner.os == 'macOS'
+        run: brew install ninja
+
+      - name: Show toolchain
+        run: |
+          cmake --version
+          ninja --version
+          c++ --version
+
+      - name: Configure
+        run: cmake --preset ${{ matrix.preset }}
+
+      - name: Build
+        run: cmake --build --preset ${{ matrix.preset }}
+
+      - name: Test
+        run: ctest --preset ${{ matrix.preset }}
+
+  # Proves the packaging chain: CMake through scikit-build-core, the extension
+  # landing inside the package, and `import stratakv` working from a clean env.
+  python:
+    name: Python ${{ matrix.python }} on ${{ matrix.os }}
+    runs-on: ${{ matrix.os }}
+    strategy:
+      fail-fast: false
+      matrix:
+        os: [ubuntu-latest, macos-latest]
+        python: ["3.11", "3.13"]
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-python@v5
+        with:
+          python-version: ${{ matrix.python }}
+
+      - name: Install Ninja (Linux)
+        if: runner.os == 'Linux'
+        run: sudo apt-get update && sudo apt-get install -y ninja-build
+
+      - name: Install Ninja (macOS)
+        if: runner.os == 'macOS'
+        run: brew install ninja
+
+      - name: Install the package
+        run: python -m pip install --upgrade pip && python -m pip install '.[test]'
+
+      - name: Acceptance check
+        run: python -c "import stratakv; print(stratakv.version())"
+
+      - name: Pytest
+        run: pytest
+
+  lint:
+    name: Format and lint
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.13"
+
+      - name: Install tools
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y clang-format clang-tidy ninja-build
+          python -m pip install --upgrade pip ruff
+
+      - name: clang-format
+        run: |
+          find include src tests/cpp python \( -name '*.cc' -o -name '*.h' \) -print \
+            | xargs clang-format --dry-run --Werror
+
+      - name: ruff
+        run: ruff check python tests/py tools && ruff format --check python tests/py tools
+
+      # clang-tidy needs compile_commands.json, so the project is configured
+      # first. Only .cc files are passed: a header has no entry in the
+      # compilation database, and HeaderFilterRegex covers them anyway. Tests
+      # are excluded because GoogleTest macros trip many checks.
+      - name: clang-tidy
+        run: |
+          cmake --preset debug
+          find src -name '*.cc' -print | xargs clang-tidy -p build/debug
