@@ -243,6 +243,36 @@ itself distinguishes them — only what comes *after* it does. That is why recov
 entire file before applying any of it, and why the acceptance tests for the two cases are
 genuinely testing different code paths rather than the same one twice.
 
+### Found by the post-phase verification pass
+
+Re-checking the phase before moving on turned up two things that the original test suite
+did not cover.
+
+**A failed open releases the LOCK file — verified, not assumed.** Reasoning said the
+destructor would run `Close()` and reset the lock, but nothing tested it. If it were wrong,
+a corrupt database could never be retried or repaired without restarting the process.
+Two tests now cover it, including three consecutive failed opens.
+
+**A damaged *final* WAL record is silently truncated rather than reported.** This came out
+of writing the test above with a single record, which unexpectedly opened cleanly. The
+cause is not a bug: with one record there is nothing valid after the damage, so the
+classification rule treats it as a torn tail. But it means that if disk corruption damages
+the last acknowledged write, the engine drops it and reports a successful open.
+
+Nothing in the log alone can distinguish the two cases — the bytes are identical, and the
+log never records how many records it should contain. The MANIFEST in P3 fixes this by
+recording the last flushed sequence number, which lets recovery notice that the log ends
+earlier than the recorded state implies. The behavior is now pinned by
+`DBTest.ADamagedFinalRecordIsTruncatedNotReported` and written up under "Known limits of
+recovery" in [DESIGN.md](DESIGN.md), so P3 changes it on purpose rather than by accident.
+
+**Leak detection does not run locally.** Forcing `ASAN_OPTIONS=detect_leaks=1` on
+macOS/arm64 produces `detect_leaks is not supported on this platform` and aborts every
+test. LeakSanitizer is enabled by default with ASan on Linux, so the Ubuntu `asan` CI job
+is the only place leaks are actually checked — which matters for this phase in particular,
+since the arena hands out memory that is never individually freed. That job passes. Worth
+knowing so a clean local ASan run is not mistaken for a leak check.
+
 ### Five questions
 
 1. `Write` appends to the WAL, syncs, and only then inserts into the memtable. What happens
@@ -259,6 +289,9 @@ genuinely testing different code paths rather than the same one twice.
    x86 laptop?
 5. Skip-list nodes hold `std::string_view`s into arena memory instead of `std::string`s.
    What specifically goes wrong if that is changed to `std::string`?
+6. Disk corruption damages the *last* record in the WAL of a database with one acknowledged
+   write. What does the next open do, why can P1 not do better, and what piece of
+   information would make it possible?
 
 #### Answers
 
@@ -286,6 +319,12 @@ genuinely testing different code paths rather than the same one twice.
    itself copied and owns, so freeing the blocks frees everything exactly once. This is
    also why nodes are safe to reach through raw pointers with no lock: they are never freed
    individually.
+6. It truncates the damaged record and opens successfully with an empty database, silently
+   losing an acknowledged write. P1 cannot do better because a damaged last record is
+   byte-for-byte indistinguishable from a write that was interrupted mid-append, and the
+   log never records how many records it should contain — so there is nothing to compare
+   against. The missing information is the last sequence number the database is known to
+   have reached, which the MANIFEST records from P3 onward.
 
 ### Numbers
 

@@ -326,6 +326,95 @@ TEST_F(DBTest, OneCorruptByteInAMiddleRecordIsDetected) {
   EXPECT_EQ(db, nullptr) << "a corrupt database must not open silently";
 }
 
+// A failed open must not leak the LOCK file. If it did, a corrupt database
+// could never be retried or repaired without killing the process.
+TEST_F(DBTest, AFailedOpenReleasesTheLock) {
+  // Several records, so that damaging an early one leaves valid records after
+  // it. With a single record there is nothing after the damage, which is
+  // deliberately treated as a torn tail instead.
+  {
+    auto db = OpenOrDie();
+    for (int i = 0; i < 100; ++i) {
+      ASSERT_TRUE(db->Put(WriteOptions{}, NumberedKey(i), NumberedValue(i)).ok());
+    }
+    ASSERT_TRUE(db->Close().ok());
+  }
+
+  std::string contents;
+  ASSERT_TRUE(env_.ReadFileToString(WalPath(), &contents).ok());
+  const std::string good_contents = contents;
+
+  // Corrupt the middle so the open fails.
+  const size_t target = contents.size() / 2;
+  contents[target] = static_cast<char>(contents[target] ^ 0x01);
+  ASSERT_TRUE(env_.WriteFile(WalPath(), contents).ok());
+
+  std::unique_ptr<DB> failed;
+  ASSERT_TRUE(Open(&failed).IsCorruption());
+  ASSERT_EQ(failed, nullptr);
+
+  // Restoring the log must now let the database open: the lock from the failed
+  // attempt has to be gone.
+  ASSERT_TRUE(env_.WriteFile(WalPath(), good_contents).ok());
+  std::unique_ptr<DB> reopened;
+  const Status status = Open(&reopened);
+  ASSERT_TRUE(status.ok()) << status.ToString();
+
+  std::string value;
+  ASSERT_TRUE(reopened->Get(ReadOptions{}, NumberedKey(0), &value).ok());
+  EXPECT_EQ(value, NumberedValue(0));
+}
+
+// Two consecutive failed opens must each clean up after themselves.
+TEST_F(DBTest, RepeatedFailedOpensDoNotAccumulateLocks) {
+  {
+    auto db = OpenOrDie();
+    for (int i = 0; i < 100; ++i) {
+      ASSERT_TRUE(db->Put(WriteOptions{}, NumberedKey(i), NumberedValue(i)).ok());
+    }
+    ASSERT_TRUE(db->Close().ok());
+  }
+
+  std::string contents;
+  ASSERT_TRUE(env_.ReadFileToString(WalPath(), &contents).ok());
+  const size_t target = contents.size() / 2;
+  contents[target] = static_cast<char>(contents[target] ^ 0x01);
+  ASSERT_TRUE(env_.WriteFile(WalPath(), contents).ok());
+
+  for (int attempt = 0; attempt < 3; ++attempt) {
+    std::unique_ptr<DB> failed;
+    EXPECT_TRUE(Open(&failed).IsCorruption()) << "attempt " << attempt;
+  }
+}
+
+// The inherent limit of recovering from a log alone: a damaged FINAL record is
+// byte-for-byte indistinguishable from a write that was interrupted, so it is
+// truncated rather than reported. That silently drops an acknowledged write if
+// the cause was disk corruption rather than a crash.
+//
+// P1 cannot do better -- nothing in the log says how many records there should
+// be. The MANIFEST in P3 records the last flushed sequence number, which is the
+// information needed to notice the difference. This test pins the current
+// behavior so the improvement is a deliberate change rather than a surprise.
+TEST_F(DBTest, ADamagedFinalRecordIsTruncatedNotReported) {
+  {
+    auto db = OpenOrDie();
+    ASSERT_TRUE(db->Put(WriteOptions{}, "only-key", "only-value").ok());
+    ASSERT_TRUE(db->Close().ok());
+  }
+
+  std::string contents;
+  ASSERT_TRUE(env_.ReadFileToString(WalPath(), &contents).ok());
+  const size_t target = contents.size() - 2;  // Inside the one and only record.
+  contents[target] = static_cast<char>(contents[target] ^ 0x01);
+  ASSERT_TRUE(env_.WriteFile(WalPath(), contents).ok());
+
+  auto db = OpenOrDie();
+  std::string value;
+  EXPECT_TRUE(db->Get(ReadOptions{}, "only-key", &value).IsNotFound())
+      << "documented limitation: the damaged last record is dropped, not reported";
+}
+
 TEST_F(DBTest, ManyKeysRoundTripWithOverwritesAndDeletes) {
   constexpr int kKeys = 5000;
   auto db = OpenOrDie();

@@ -107,6 +107,29 @@ comment at its implementation site explaining why the order matters.
 6. **Tombstones may only be dropped at the bottom level.** A tombstone hides older PUTs in
    lower levels; drop it higher up and those values come back to life.
 
+## Known limits of recovery
+
+### A damaged final record cannot be distinguished from an interrupted one
+
+A WAL record that fails its checksum with no valid record after it is treated as a torn
+tail and truncated. That is correct when the cause was a crash mid-append: the write was
+never acknowledged, so nothing promised is lost.
+
+It is *not* correct when the cause was disk corruption of a record that had been fully
+written and acknowledged. In that case the engine silently drops an acknowledged write and
+reports a successful open.
+
+**Nothing in the log alone can tell these apart** — the bytes are identical, and the log
+does not record how many records it ought to contain. This is a real limit of log-only
+recovery, not an oversight, and it is pinned by
+`DBTest.ADamagedFinalRecordIsTruncatedNotReported` so that any change to the behavior is
+deliberate.
+
+The fix arrives with the MANIFEST in P3, which records the last flushed sequence number.
+Recovery can then notice that the log ends earlier than the recorded state implies, and
+report corruption instead of truncating. Until then, a damaged *middle* record is detected
+(because valid records follow it) while a damaged *last* record is not.
+
 ## Decisions made in P0 that the spec did not dictate
 
 | Decision | Chose | Alternative | Why it won |
