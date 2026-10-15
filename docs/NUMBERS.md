@@ -36,6 +36,14 @@ so they are recorded the same way.
 | C++ tests, TSan | 26/26 passed, 0 reports | `cmake --preset tsan && cmake --build --preset tsan && ctest --preset tsan` | M1 | 2026-10-15 |
 | Python tests | 5/5 passed | `pip install '.[test]' && pytest` | M1 | 2026-10-15 |
 | CRC32C known-answer, `"123456789"` | `0xE3069283` | `ctest --preset debug -R Crc32c.MatchesKnownAnswers` | M1 | 2026-10-15 |
+| clang-tidy, curated checks | 0 diagnostics | `./tools/run-clang-tidy.sh build/debug` | M1 | 2026-10-15 |
+| CI, all 13 jobs | passed on Ubuntu and macOS | push to `main`, [run 38786203847](https://github.com/marlmelara/strataKV/actions/runs/38786203847) | GitHub Actions `ubuntu-latest` + `macos-latest` | 2026-10-15 |
+
+The CI row is what satisfies P0's third acceptance criterion. It covers all four presets on
+both operating systems, the Python package on 3.11 and 3.13, and the lint job. Note that
+the sanitizer results above were produced on Apple Silicon; the Ubuntu x86-64 runners
+exercise the same presets, which matters because ARM reorders memory more aggressively than
+x86 and the skip list in P1 will depend on that distinction.
 
 ## Performance numbers
 

@@ -84,11 +84,17 @@ both build-configuration problems, each fixed on the first try once the error wa
 
 ### Verification status
 
-Everything is verified on both operating systems. CI run
-[38785287020](https://github.com/marlmelara/strataKV/actions/runs/38785287020) passed all
+Everything is verified on both operating systems. The first CI run,
+[38785287020](https://github.com/marlmelara/strataKV/actions/runs/38785287020), passed all
 twelve build, test, and packaging jobs on Ubuntu and macOS, which answered the open
 question about `-Werror` with `-Wconversion` and `-Wsign-conversion`: GCC flagged nothing
 that Apple Clang had not. Only the lint job failed, for the version-skew reason above.
+
+After pinning the linters, run
+[38786203847](https://github.com/marlmelara/strataKV/actions/runs/38786203847) passed all
+thirteen jobs. **P0's three acceptance criteria are therefore all met.** The one remaining
+annotation was a Node.js 20 deprecation warning on `actions/checkout@v4` and
+`actions/setup-python@v5`, since fixed by moving both to `@v7`.
 
 ### Five questions
 
