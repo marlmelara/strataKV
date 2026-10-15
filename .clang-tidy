@@ -1,0 +1,24 @@
+---
+# Checks are deliberately narrow: bugprone and correctness checks that catch
+# real defects, plus readability checks that keep the code teachable. Noisy
+# stylistic checks are off so that a clean run means something.
+Checks: >
+  bugprone-*,
+  performance-*,
+  modernize-*,
+  readability-*,
+  misc-*,
+  -bugprone-easily-swappable-parameters,
+  -modernize-use-trailing-return-type,
+  -readability-identifier-length,
+  -readability-magic-numbers,
+  -misc-non-private-member-variables-in-classes,
+  -misc-include-cleaner
+
+WarningsAsErrors: ''
+HeaderFilterRegex: '(include/stratakv|src)/.*\.h$'
+FormatStyle: file
+
+CheckOptions:
+  - key: readability-function-cognitive-complexity.Threshold
+    value: '40'

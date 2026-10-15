@@ -1,0 +1,17 @@
+---
+Language: Cpp
+BasedOnStyle: Google
+ColumnLimit: 100
+IndentWidth: 2
+DerivePointerAlignment: false
+PointerAlignment: Left
+IncludeBlocks: Regroup
+IncludeCategories:
+  - Regex: '^<[a-z_]+>$'
+    Priority: 1
+  - Regex: '^<.*>$'
+    Priority: 2
+  - Regex: '^"stratakv/.*"$'
+    Priority: 3
+  - Regex: '.*'
+    Priority: 4

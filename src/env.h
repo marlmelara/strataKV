@@ -1,0 +1,110 @@
+#pragma once
+
+#include <cstddef>
+#include <cstdint>
+#include <memory>
+#include <span>
+#include <string>
+#include <string_view>
+
+#include "stratakv/status.h"
+
+// Env is the engine's whole view of the operating system: opening files,
+// appending, fsync, rename, directory fsync, and the LOCK file. Keeping every
+// syscall behind this one interface means the durability rules live in one
+// place, and a later phase can substitute a fake Env for testing.
+namespace stratakv {
+
+// A file opened for appending. One writer at a time; the engine never appends
+// to a file from two threads.
+class WritableFile {
+ public:
+  WritableFile() = default;
+  virtual ~WritableFile() = default;
+
+  WritableFile(const WritableFile&) = delete;
+  WritableFile& operator=(const WritableFile&) = delete;
+
+  // Appends all of `data`. A short write from the OS is retried internally, so
+  // a successful return means every byte reached the kernel -- not the disk.
+  virtual Status Append(std::span<const uint8_t> data) = 0;
+
+  // Forces everything appended so far all the way to durable storage. Only
+  // after this returns OK may a write be acknowledged to the caller.
+  virtual Status Sync() = 0;
+
+  // Cuts the file to `size` bytes. WAL recovery uses this to drop a torn tail.
+  virtual Status Truncate(uint64_t size) = 0;
+
+  virtual Status Close() = 0;
+
+  // Bytes appended so far, tracked in memory rather than by stat().
+  virtual uint64_t Size() const = 0;
+
+  // Convenience wrapper so callers with text do not have to cast. Not virtual:
+  // it forwards to the one Append that subclasses implement.
+  Status Append(std::string_view data) {
+    return Append(
+        std::span<const uint8_t>(reinterpret_cast<const uint8_t*>(data.data()), data.size()));
+  }
+};
+
+// Holds the database's LOCK file. Releasing is tied to the object's lifetime
+// (RAII), so a lock cannot be leaked by an early return: destroying the
+// FileLock unlocks and closes the file.
+class FileLock {
+ public:
+  FileLock() = default;
+  virtual ~FileLock() = default;
+
+  FileLock(const FileLock&) = delete;
+  FileLock& operator=(const FileLock&) = delete;
+};
+
+class Env {
+ public:
+  // The process-wide POSIX implementation. Returned by reference because there
+  // is exactly one and nobody owns it.
+  static Env& Default();
+
+  Env() = default;
+  virtual ~Env() = default;
+
+  Env(const Env&) = delete;
+  Env& operator=(const Env&) = delete;
+
+  // Creates `path`, truncating it if it already exists.
+  virtual Status NewWritableFile(const std::string& path, std::unique_ptr<WritableFile>* out) = 0;
+
+  // Writes `contents` as the entire file. Does not sync; callers that need
+  // durability follow this with SyncFile and, for a new name, SyncDir.
+  virtual Status WriteFile(const std::string& path, std::string_view contents) = 0;
+
+  virtual Status ReadFileToString(const std::string& path, std::string* out) = 0;
+
+  // Flushes an already-closed file's contents to durable storage.
+  virtual Status SyncFile(const std::string& path) = 0;
+
+  // Flushes a directory's entries, which is what makes a create, rename, or
+  // delete inside it survive a crash. The rename itself is not durable until
+  // this returns.
+  virtual Status SyncDir(const std::string& dir) = 0;
+
+  // Atomically replaces `to` with `from`. A reader sees the old file or the new
+  // one, never a mix.
+  virtual Status Rename(const std::string& from, const std::string& to) = 0;
+
+  virtual Status RemoveFile(const std::string& path) = 0;
+
+  virtual Status CreateDirIfMissing(const std::string& path) = 0;
+
+  virtual bool FileExists(const std::string& path) = 0;
+
+  virtual Status GetFileSize(const std::string& path, uint64_t* size) = 0;
+
+  // Takes an exclusive, non-blocking lock so two processes cannot open the same
+  // database. Fails rather than waiting if the lock is already held.
+  virtual Status LockFile(const std::string& path, std::unique_ptr<FileLock>* out) = 0;
+};
+
+}  // namespace stratakv
