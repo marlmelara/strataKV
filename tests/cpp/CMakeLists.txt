@@ -12,6 +12,7 @@ add_executable(stratakv_tests
                test_db.cc
                test_flush.cc
                test_env.cc
+               test_filename.cc
                test_internal_key.cc
                test_memtable.cc
                test_skiplist.cc

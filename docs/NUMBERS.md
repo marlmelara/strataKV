@@ -60,6 +60,7 @@ so they are recorded the same way.
 | 1,000,000 keys written, reopened, all read back correctly | passed in 12.4 s (default 4 MB memtable, batched, `kNoSync`) | `ctest --preset debug -R OneMillionKeysSurviveReopen` | M1 | 2026-10-15 |
 | Crash during flush, every acknowledged write recovered | passed for `flush_after_sst_write` and `flush_before_wal_delete` | `ctest --preset debug -R AcceptanceCrashPoints` | M1 | 2026-10-15 |
 | clang-tidy, curated checks | 0 diagnostics | `./tools/run-clang-tidy.sh build/debug` | M1 | 2026-10-15 |
+| Concurrent reads during repeated flushes | 20/20 consecutive runs, 0 TSan reports | `for i in $(seq 1 20); do ctest --preset tsan -R 'Flush\|CrashPoints' -E OneMillionKeys; done` | M1 | 2026-10-15 |
 
 The measured 0.729% sits just under the ~0.8% the theory predicts for 10 bits per key with
 7 probes, which is the expected result: the filter is slightly larger than the exact

@@ -424,6 +424,53 @@ the instinct on a red test is to suspect the code:
    flush crash points keep the "nothing acknowledged was lost" assertion, where thousands
    of writes make it meaningful.
 
+### Found by the post-phase verification pass
+
+P2 passed everything on the first full run, which is exactly when it is worth looking
+harder. Re-checking the phase before starting P3 found four things the test suite did not
+cover. None was a bug, but three of them were paths where a bug would have gone unnoticed.
+
+**Concurrent reads during a flush were never exercised.** This is the interaction P2
+introduced: a reader copies three pointers under the lock, releases it, and searches while
+the background thread rotates memtables, writes a table, and swaps the L0 list underneath
+it. Every existing test waited for the flush to finish first.
+`ReadersSeeEveryAcknowledgedKeyWhileFlushesRun` now runs four reader threads against a
+writer forcing repeated rotations, asserting that a key acknowledged before a read begins
+can never vanish during one. It passed 20 consecutive runs under ThreadSanitizer.
+
+**Nothing checked that logs left by a crash are ever cleaned up.** After a crash in the
+flush window, recovery replays several logs into one memtable, and all of them must be
+deleted when that memtable is next flushed. If the bookkeeping were wrong, logs would
+accumulate forever: the database would grow without bound even though its contents did
+not, and recovery would get slower on every open. That is the kind of defect that only
+shows up in production, weeks later.
+`LogsLeftByACrashAreCleanedUpByTheNextFlush` pins it.
+
+**`ParseFileName` had no unit tests at all.** It parses the directory listing, so it is the
+code that decides what the engine believes exists, and it carries both a digit check and an
+overflow guard that nothing verified. Six tests now cover round-tripping, names that merely
+resemble ours (`000001.sstx`, `000001.lo`, `1.5.log`), and a 20-digit number that would
+overflow into a small one and collide with a real file.
+
+**A stray file in the database directory was untested.** `StrayFilesInTheDirectoryAreIgnored`
+confirms that `notes.txt` and friends are left alone -- recovery has no business deleting
+files it does not recognise.
+
+### Still not covered, deliberately
+
+**The flush-failure path.** If a flush fails, `background_error_` is set and writes stop.
+There is no clean way to make a flush fail on demand without adding a fault-injection hook
+to `Env`, which is worth doing when P3 adds more I/O paths rather than bolting on now. The
+path is three lines and reviewed, but it is not tested, and that is worth stating rather
+than leaving implied.
+
+**Deleting log files by hand.** Every log begins with a sequence watermark, and the active
+log is never deleted by the engine, so sequence numbering always survives a flush. But if
+someone removes the logs manually while leaving the SSTables, recovery would restart
+numbering from zero and new writes would be shadowed by older data. There is no cheap
+defense in P2; the MANIFEST in P3 makes it detectable. Not a supported operation, and now
+written down as such.
+
 ### Five questions
 
 1. The flush writes an SSTable, syncs it, syncs the directory, installs it, and only then

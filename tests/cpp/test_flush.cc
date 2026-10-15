@@ -2,9 +2,12 @@
 // recovery around a flush. These are the tests that prove P2's acceptance
 // criteria.
 
+#include <atomic>
 #include <map>
 #include <memory>
+#include <random>
 #include <string>
+#include <thread>
 #include <vector>
 
 #include <gtest/gtest.h>
@@ -320,6 +323,137 @@ TEST_F(FlushTest, OneMillionKeysSurviveReopen) {
   for (int i = 0; i < 1000; ++i) {
     EXPECT_TRUE(db->Get(ReadOptions{}, "absent-" + std::to_string(i), &value).IsNotFound());
   }
+}
+
+// The interaction P2 introduced and nothing else exercises: readers searching
+// while the background thread rotates memtables, writes tables, and swaps the
+// L0 list underneath them.
+//
+// Readers hold no lock during their search; they rely on the copied shared_ptrs
+// keeping the memtables and open files alive. If that were wrong, this is where
+// ThreadSanitizer would say so -- or where a key would vanish mid-flush.
+TEST_F(FlushTest, ReadersSeeEveryAcknowledgedKeyWhileFlushesRun) {
+  constexpr int kKeys = 4000;
+  constexpr int kReaders = 4;
+
+  auto db = OpenOrDie(SmallMemtableOptions());
+
+  // The writer publishes how far it has got; a reader only asserts about keys
+  // at or below that, since anything beyond has not been acknowledged yet.
+  std::atomic<int> highest_written{-1};
+  std::atomic<bool> writing_done{false};
+  std::atomic<long> reads_completed{0};
+
+  std::vector<std::thread> readers;
+  readers.reserve(kReaders);
+  for (int r = 0; r < kReaders; ++r) {
+    readers.emplace_back([&, r] {
+      std::mt19937 random(static_cast<uint32_t>(r) + 1);
+      std::string value;
+      while (!writing_done.load(std::memory_order_acquire)) {
+        const int limit = highest_written.load(std::memory_order_acquire);
+        if (limit < 0) continue;
+        const int index = static_cast<int>(random() % static_cast<uint32_t>(limit + 1));
+
+        // This key was acknowledged before the read began, so no amount of
+        // rotation, flushing, or table installation may make it disappear.
+        const Status status = db->Get(ReadOptions{}, NumberedKey(index), &value);
+        ASSERT_TRUE(status.ok()) << "key " << index
+                                 << " vanished during a flush: " << status.ToString();
+        ASSERT_EQ(value, NumberedValue(index)) << "key " << index;
+        reads_completed.fetch_add(1, std::memory_order_relaxed);
+      }
+    });
+  }
+
+  for (int i = 0; i < kKeys; ++i) {
+    ASSERT_TRUE(db->Put(WriteOptions{}, NumberedKey(i), NumberedValue(i)).ok()) << i;
+    highest_written.store(i, std::memory_order_release);
+  }
+  writing_done.store(true, std::memory_order_release);
+  for (auto& reader : readers) reader.join();
+
+  EXPECT_GT(reads_completed.load(std::memory_order_relaxed), 0)
+      << "readers never ran, so this proved nothing";
+
+  auto* impl = dynamic_cast<DBImpl*>(db.get());
+  ASSERT_TRUE(impl->TEST_WaitForFlush().ok());
+  EXPECT_GT(impl->TEST_Level0FileCount(), 0U) << "no flush happened, so this proved nothing";
+}
+
+// After a crash that leaves several logs behind, recovery replays all of them
+// into one memtable. Every one of those logs must then be deleted when that
+// memtable is eventually flushed -- otherwise logs accumulate forever, and the
+// database grows without bound even though its contents do not.
+TEST_F(FlushTest, LogsLeftByACrashAreCleanedUpByTheNextFlush) {
+  const Options options = SmallMemtableOptions();
+
+  // Crash after the table is installed but before its logs are removed, which
+  // is precisely the window that leaves more than one log on disk.
+  const auto result = RunWithEnv(STRATAKV_CRASH_HELPER, {DbPath(), "4000", "8192"},
+                                 "STRATAKV_CRASH_AT", "flush_before_wal_delete");
+  ASSERT_TRUE(result.exited_normally);
+  ASSERT_EQ(result.exit_code, 1) << "the crash point did not fire";
+
+  const size_t logs_after_crash = ChildrenWithSuffix(".log").size();
+  ASSERT_GT(logs_after_crash, 1U) << "the crash should have left more than one log";
+
+  const std::vector<std::string> acknowledged = SplitLines(result.stdout_text);
+  ASSERT_GT(acknowledged.size(), 0U);
+
+  {
+    auto db = OpenOrDie(options);
+    std::string value;
+    // Recovery must have replayed every surviving log, not just the newest.
+    for (const std::string& key : acknowledged) {
+      ASSERT_TRUE(db->Get(ReadOptions{}, key, &value).ok()) << "lost " << key;
+    }
+
+    // Write enough to force a rotation and flush of the recovered memtable.
+    for (int i = 0; i < 4000; ++i) {
+      ASSERT_TRUE(db->Put(WriteOptions{}, "post-recovery-" + std::to_string(i), "v").ok());
+    }
+    ASSERT_TRUE(dynamic_cast<DBImpl*>(db.get())->TEST_WaitForFlush().ok());
+    ASSERT_TRUE(db->Close().ok());
+  }
+
+  EXPECT_LT(ChildrenWithSuffix(".log").size(), logs_after_crash)
+      << "the logs the crash left behind were never cleaned up";
+
+  // And nothing was lost in the process.
+  auto db = OpenOrDie(options);
+  std::string value;
+  for (const std::string& key : acknowledged) {
+    ASSERT_TRUE(db->Get(ReadOptions{}, key, &value).ok()) << "lost " << key << " after cleanup";
+  }
+}
+
+// Recovery lists the directory to find its files, so anything else in there
+// must be left alone rather than mistaken for a table or a log.
+TEST_F(FlushTest, StrayFilesInTheDirectoryAreIgnored) {
+  const Options options = SmallMemtableOptions();
+  {
+    auto db = OpenOrDie(options);
+    for (int i = 0; i < 1000; ++i) {
+      ASSERT_TRUE(db->Put(WriteOptions{}, NumberedKey(i), NumberedValue(i)).ok());
+    }
+    ASSERT_TRUE(dynamic_cast<DBImpl*>(db.get())->TEST_WaitForFlush().ok());
+    ASSERT_TRUE(db->Close().ok());
+  }
+
+  // Names that look close to ours but are not, plus something unrelated.
+  for (const char* name : {"notes.txt", "000001.sstx", "000001.lo", "backup", ".DS_Store"}) {
+    ASSERT_TRUE(env_.WriteFile(dir_.Child("mydb/" + std::string(name)), "junk").ok()) << name;
+  }
+
+  auto db = OpenOrDie(options);
+  std::string value;
+  for (int i = 0; i < 1000; ++i) {
+    ASSERT_TRUE(db->Get(ReadOptions{}, NumberedKey(i), &value).ok()) << i;
+  }
+  // The stray files must still be there: recovery has no business deleting
+  // files it does not recognise.
+  EXPECT_TRUE(env_.FileExists(dir_.Child("mydb/notes.txt")));
 }
 
 // --- P2 acceptance: crash points around the flush ---
