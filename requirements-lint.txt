@@ -1,0 +1,13 @@
+# Pinned so that local runs and CI use byte-identical tools.
+#
+# This file exists because of a real failure: Ubuntu's apt shipped
+# clang-format 18 while the development machine had Apple's clang-format 21,
+# and the two disagree about whether `struct ::stat info {}` keeps the space
+# before the braces. No single spelling satisfies both, so the formatter
+# version has to be pinned rather than the code contorted.
+#
+# Bump these deliberately, reformat in the same commit, and never leave the
+# version floating.
+clang-format==21.1.8
+clang-tidy==21.1.6
+ruff==0.17.1

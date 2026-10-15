@@ -1,5 +1,6 @@
 #include "env.h"
 
+#include <array>
 #include <cerrno>
 #include <cstdint>
 #include <cstring>
@@ -143,7 +144,7 @@ class PosixEnv final : public Env {
   Status WriteFile(const std::string& path, std::string_view contents) override {
     const int fd = ::open(path.c_str(), O_WRONLY | O_CREAT | O_TRUNC, kFileMode);
     if (fd < 0) return PosixError(path, errno);
-    const Status s =
+    Status s =
         WriteFully(fd, reinterpret_cast<const uint8_t*>(contents.data()), contents.size(), path);
     if (::close(fd) != 0 && s.ok()) return PosixError(path, errno);
     return s;
@@ -153,17 +154,17 @@ class PosixEnv final : public Env {
     const int fd = ::open(path.c_str(), O_RDONLY);
     if (fd < 0) return PosixError(path, errno);
     out->clear();
-    char buffer[8192];
+    std::array<char, 8192> buffer{};
     while (true) {
-      const ssize_t result = ::read(fd, buffer, sizeof(buffer));
+      const ssize_t result = ::read(fd, buffer.data(), buffer.size());
       if (result < 0) {
         if (errno == EINTR) continue;
-        const Status s = PosixError(path, errno);
+        Status s = PosixError(path, errno);
         ::close(fd);
         return s;
       }
       if (result == 0) break;
-      out->append(buffer, static_cast<size_t>(result));
+      out->append(buffer.data(), static_cast<size_t>(result));
     }
     ::close(fd);
     return Status::OK();

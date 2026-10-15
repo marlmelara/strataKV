@@ -60,13 +60,35 @@ both build-configuration problems, each fixed on the first try once the error wa
    keeping: validate workflow files locally; the feedback loop through GitHub is minutes
    long and the error message there is worse.
 
-### What is not yet verified
+3. **The first CI run went red on formatting — a tool version mismatch, not the code.**
+   Ubuntu's apt ships `clang-format` 18; the development machine had Apple's
+   `clang-format` 21. They disagree about whether `struct ::stat info {}` keeps the space
+   before the braces, and *no single spelling satisfies both* — formatting to suit one
+   makes the other reject it. Contorting the code would have been the wrong fix. Instead
+   all three linters are now pinned in `requirements-lint.txt` and installed from pip in
+   CI rather than from apt, so the question "which clang-format?" has exactly one answer.
+   Lesson: a formatter that is not version-pinned is not a check, it is a coin flip.
 
-The Linux half of CI has never run. Everything above was verified on macOS/arm64 with
-Apple Clang. The presets turn on `-Werror` together with `-Wconversion` and
-`-Wsign-conversion`, and GCC and Clang do not warn about identical things, so the first CI
-run on Ubuntu is a genuine test rather than a formality. If it goes red, it will be
-compiler warnings in `src/env.cc` or `src/crc32c.cc`, not logic.
+4. **clang-tidy had never actually run, and reported 45 diagnostics on first use.** Two
+   were hard errors — `'string' file not found` — which turned out to be environmental:
+   pip's clang-tidy is not Apple's toolchain and does not know where the macOS SDK keeps
+   the standard library headers. Passing `-isysroot` fixed those and, importantly, also
+   removed several *false* findings that the failed header parse had caused (clang-tidy had
+   lost the declarations in `crc32c.h` and was recommending internal linkage for functions
+   the tests call). The platform difference now lives in `tools/run-clang-tidy.sh` so the
+   local and CI invocations are the same one. Of the genuine findings, the check list was
+   curated down to the families that catch defects, and the two real ones were fixed: a
+   `const` local that blocked a move on return, and a C-style array replaced with
+   `std::array`. Lesson: a hard error from a static analyzer poisons its other output —
+   fix the errors before believing any of the warnings.
+
+### Verification status
+
+Everything is verified on both operating systems. CI run
+[38785287020](https://github.com/marlmelara/strataKV/actions/runs/38785287020) passed all
+twelve build, test, and packaging jobs on Ubuntu and macOS, which answered the open
+question about `-Werror` with `-Wconversion` and `-Wsign-conversion`: GCC flagged nothing
+that Apple Clang had not. Only the lint job failed, for the version-skew reason above.
 
 ### Five questions
 

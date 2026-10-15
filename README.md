@@ -48,6 +48,20 @@ python -c "import stratakv; print(stratakv.version())"
 it inside the `stratakv` package. Run the Python tests with `pip install '.[test]'` then
 `pytest`.
 
+## Formatting and linting
+
+The linters are pinned in [requirements-lint.txt](requirements-lint.txt) so that a local
+run and a CI run are the same check — clang-format versions disagree with each other about
+real formatting decisions, so the version is fixed rather than left to whatever the OS
+ships.
+
+```bash
+pip install -r requirements-lint.txt
+find include src tests/cpp python \( -name '*.cc' -o -name '*.h' \) -print | xargs clang-format -i
+./tools/run-clang-tidy.sh build/debug
+ruff check python tests/py tools && ruff format python tests/py tools
+```
+
 ## Crash-safety guarantees
 
 The engine's one central claim: **if `Put` returned OK, that write survives a crash.**

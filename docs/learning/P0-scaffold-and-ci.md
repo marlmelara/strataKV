@@ -280,6 +280,26 @@ than discovering it from a red run on GitHub, the workflow was parsed locally wi
 round trip through GitHub Actions is minutes long and its error messages are worse than a
 local parser's.
 
+**The first CI run failed, and the reason is worth internalizing.** Not the compiler
+warnings that seemed most likely — all twelve build and test jobs passed on both Ubuntu and
+macOS — but `clang-format`. Ubuntu's apt ships version 18 and the laptop had Apple's
+version 21, and they disagree about whether `struct ::stat info {}` keeps its space before
+the braces. There is no way to write that line that satisfies both. The fix was to stop
+letting the operating system choose the tool version: all three linters are now pinned in
+[requirements-lint.txt](../../requirements-lint.txt) and installed from pip. An unpinned
+formatter is not a check, it is a coin flip — and the same reasoning applies to anything
+whose output is compared for equality across machines.
+
+**clang-tidy's first run reported 45 diagnostics, and most of them were lies.** Two were
+hard errors saying `'string' file not found`, because pip's clang-tidy does not know the
+macOS SDK path. That failed parse cascaded: having never seen the declarations in
+`crc32c.h`, clang-tidy then "found" that `crc32c::Value` should have internal linkage —
+which would have broken the tests that call it. Supplying `-isysroot` removed the errors
+*and* those false findings. The real ones were two, and both got fixed: a `const` local
+that prevented a move on return, and a C-style array replaced with `std::array`. The lesson
+generalizes past this tool: when a static analyzer emits hard errors, fix those first and
+do not act on anything else it said.
+
 **One deliberate verification choice.** Rather than trusting remembered CRC32C constants,
 a bit-by-bit reference implementation was written in Python
 ([tools/crc32c_reference.py](../../tools/crc32c_reference.py)) — table-free, so it shares

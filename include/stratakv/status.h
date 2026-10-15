@@ -1,5 +1,6 @@
 #pragma once
 
+#include <cstdint>
 #include <string>
 #include <string_view>
 
@@ -10,7 +11,8 @@ namespace stratakv {
 // flow on the write path. LevelDB and RocksDB make the same choice. The binding
 // layer turns a bad Status into a Python exception, which is where exceptions
 // belong.
-enum class StatusCode {
+// Sized explicitly so Status stays small: the code is one byte, not four.
+enum class StatusCode : uint8_t {
   kOk = 0,
   kNotFound,
   kCorruption,

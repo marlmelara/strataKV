@@ -91,11 +91,22 @@ jobs:
         with:
           python-version: "3.13"
 
+      # clang-format and clang-tidy come from pip at pinned versions, not from
+      # apt. Ubuntu ships clang-format 18 while development happens against 21,
+      # and the two disagree about real formatting decisions -- so the version
+      # is pinned in one place for everybody.
       - name: Install tools
         run: |
           sudo apt-get update
-          sudo apt-get install -y clang-format clang-tidy ninja-build
-          python -m pip install --upgrade pip ruff
+          sudo apt-get install -y ninja-build
+          python -m pip install --upgrade pip
+          python -m pip install -r requirements-lint.txt
+
+      - name: Tool versions
+        run: |
+          clang-format --version
+          clang-tidy --version | head -2 | tail -1
+          ruff --version
 
       - name: clang-format
         run: |
@@ -106,10 +117,9 @@ jobs:
         run: ruff check python tests/py tools && ruff format --check python tests/py tools
 
       # clang-tidy needs compile_commands.json, so the project is configured
-      # first. Only .cc files are passed: a header has no entry in the
-      # compilation database, and HeaderFilterRegex covers them anyway. Tests
-      # are excluded because GoogleTest macros trip many checks.
+      # first. The script handles the one real platform difference (macOS needs
+      # an explicit SDK path) so that local and CI runs mean the same thing.
       - name: clang-tidy
         run: |
           cmake --preset debug
-          find src -name '*.cc' -print | xargs clang-tidy -p build/debug
+          ./tools/run-clang-tidy.sh build/debug
