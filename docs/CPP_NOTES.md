@@ -264,3 +264,107 @@ a caller can check. Python's `__del__` has the same problem and simply prints th
 
 Fixes the enum's underlying integer type. Without it the compiler picks `int`, four bytes,
 which is wasteful inside a struct that exists in large numbers.
+
+## P2
+
+### `std::condition_variable`
+
+Lets a thread sleep until another one signals it.
+
+```cpp
+background_done_.wait(lock);                                      // sleep
+background_work_.wait(lock, [this] { return shutting_down_ || imm_ != nullptr; });
+```
+
+`wait` atomically releases the lock and sleeps, then reacquires it on waking. Releasing is
+the essential part: the thread that will signal usually needs the same lock, so holding it
+would deadlock.
+
+**A woken thread must always re-check its condition**, because it can wake spuriously or
+lose a race to another thread. The two-argument form does this for you — it is exactly
+`while (!predicate()) wait(lock);`. The one-argument form must be wrapped in your own loop.
+
+Python: `threading.Condition.wait()` and `wait_for(predicate)`.
+
+### `std::thread` with a lambda
+
+```cpp
+background_thread_ = std::thread([this] { BackgroundLoop(); });
+...
+if (background_thread_.joinable()) background_thread_.join();
+```
+
+Starts a real OS thread, with no GIL, so it runs genuinely in parallel. `[this]` captures
+the object so the new thread can call its methods.
+
+A `std::thread` **must** be joined or detached before it is destroyed, or the program
+terminates. That is why `Close()` joins it, and why the destructor calls `Close()`.
+
+### Lambdas and captures
+
+```cpp
+[this](const IndexEntry& entry, std::string_view key) { return ...; }
+```
+
+An anonymous function. The brackets are the **capture list**: what the lambda can see from
+the surrounding scope — `[this]` the enclosing object, `[&]` everything by reference, `[=]`
+everything by copy, `[]` nothing. Python's `lambda` captures by reference implicitly and
+has no equivalent control.
+
+Capturing by reference is only safe while the referenced thing is alive, which is why a
+lambda stored for later should capture by value.
+
+### `std::lower_bound`
+
+```cpp
+std::lower_bound(index_.begin(), index_.end(), lookup_key, comparator);
+```
+
+Binary search over a sorted range for the first element not less than a value. Returns an
+*iterator*, which equals `end()` when nothing qualifies — the way C++ says "not found".
+Python: `bisect.bisect_left`.
+
+The custom comparator takes `(element, value)` in that order and returns whether the
+element sorts before the value. Getting the argument order backwards compiles and silently
+searches wrongly.
+
+### `std::clamp`
+
+`std::clamp(value, low, high)` restricts a value to a range. Python:
+`max(low, min(high, value))`.
+
+### Ceiling division and bit manipulation
+
+```cpp
+(requested_bits + 7) / 8 * 8      // round up to a whole number of bytes
+bits_[bit / 8] |= 1U << (bit % 8) // set one bit inside a byte array
+hash += delta;                    // uint32_t wraps at 2^32 automatically
+```
+
+Integer division truncates, so `(n + 7) / 8` is the standard way to round up. `bit / 8`
+finds the byte and `bit % 8` the bit inside it; `1U << n` builds a mask with just bit `n`
+set, and `|=` turns it on without disturbing the others.
+
+Unsigned overflow wraps around and is well defined. *Signed* overflow is undefined
+behavior, which is why counters that may wrap are unsigned.
+
+### Overflow-safe bounds checks
+
+```cpp
+if (filter_offset > metadata_limit || filter_size > metadata_limit - filter_offset) { ... }
+```
+
+Not `offset + size > limit`. That addition can overflow and wrap to a small number that
+passes the check, which is a classic way for untrusted input to get past validation.
+Subtracting from the limit instead cannot overflow, because the first test has already
+established `offset <= limit`.
+
+### `dynamic_cast`
+
+```cpp
+auto* impl = dynamic_cast<DBImpl*>(db.get());
+```
+
+A checked downcast from a base pointer to a derived one, returning `nullptr` if the object
+is not actually that type. Used only in tests, to reach test-only observation points
+through the public `DB` interface. It needs a virtual function in the base class to work.

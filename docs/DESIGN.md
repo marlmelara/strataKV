@@ -130,6 +130,28 @@ Recovery can then notice that the log ends earlier than the recorded state impli
 report corruption instead of truncating. Until then, a damaged *middle* record is detected
 (because valid records follow it) while a damaged *last* record is not.
 
+### Data blocks have no checksum, so damage inside one is undetectable
+
+The specified SSTable format gives the footer a CRC32C and encodes data blocks as "a plain
+`klen | key | vlen | value` encoding" with no checksum of their own. The implementation
+follows that exactly.
+
+The consequence is worth stating plainly: **the footer checksum proves the table was
+written completely, not that its contents are intact.** A bit flipped inside a data block
+by disk corruption is returned to the caller as a value, with no error. Contrast the WAL,
+where every record is checksummed and damage is either caught or correctly classified as a
+torn tail.
+
+`ReadOptions::verify_checksums` consequently has nothing to verify at the block level,
+which is the clearest symptom that something is missing.
+
+**Recommended change, raised rather than made:** append a 4-byte CRC32C to each data block
+and verify it on read. The space cost is 4 bytes per ~4 KB block, about 0.1%, and the time
+cost is one checksum over bytes already in cache. LevelDB and RocksDB both do this. It has
+not been changed because the on-disk format is specified and the spec requires deviations
+to be raised first; this is the first item to settle before P6, since crash safety is the
+project's headline claim and this is the one place where damage goes unreported.
+
 ## Decisions made in P0 that the spec did not dictate
 
 | Decision | Chose | Alternative | Why it won |

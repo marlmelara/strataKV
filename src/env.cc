@@ -9,7 +9,9 @@
 #include <string>
 #include <string_view>
 #include <utility>
+#include <vector>
 
+#include <dirent.h>
 #include <fcntl.h>
 #include <sys/file.h>
 #include <sys/stat.h>
@@ -289,6 +291,19 @@ class PosixEnv final : public Env {
   }
 
   bool FileExists(const std::string& path) override { return ::access(path.c_str(), F_OK) == 0; }
+
+  Status GetChildren(const std::string& directory, std::vector<std::string>* result) override {
+    result->clear();
+    ::DIR* handle = ::opendir(directory.c_str());
+    if (handle == nullptr) return PosixError(directory, errno);
+    while (const ::dirent* entry = ::readdir(handle)) {
+      const std::string name = entry->d_name;
+      if (name == "." || name == "..") continue;
+      result->push_back(name);
+    }
+    ::closedir(handle);
+    return Status::OK();
+  }
 
   Status GetFileSize(const std::string& path, uint64_t* size) override {
     struct ::stat info{};

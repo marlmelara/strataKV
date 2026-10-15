@@ -334,3 +334,138 @@ results are in [NUMBERS.md](NUMBERS.md).
 ### Gate
 
 Suspended; see [STUDY.md](STUDY.md). P2 follows without waiting on a quiz pass.
+
+---
+
+## P2 — SSTables, flush, and the read path
+
+### What was built
+
+Data now reaches disk. When the memtable passes its size limit it is set aside and a
+background thread writes it out as an SSTable: sorted data blocks, a bloom filter over the
+user keys, an index of each block's last key, and a fixed-size footer with a magic number
+and checksum. Reads walk three layers newest-first -- active memtable, immutable memtable,
+then L0 tables -- stopping at the first answer, with the bloom filter sparing most lookups
+any disk read at all. A log is deleted only once the table built from it is durable, so a
+crash anywhere in the flush leaves the data recoverable from one place or the other.
+
+### The files that matter
+
+| File | What it does |
+| --- | --- |
+| [src/sstable_reader.cc](../src/sstable_reader.cc) | The read side of a table: footer validation, bloom check, index binary search, one block read. Also where every offset read from the file is bounds-checked, because they are untrusted input |
+| [src/db_impl.cc](../src/db_impl.cc) | Rotation, the background flush loop, the three-layer read path, and the ordering that makes a flush crash-safe |
+| [src/sstable_builder.cc](../src/sstable_builder.cc) | Writes the four sections and refuses out-of-order keys, which the index search and block scan both depend on |
+| [src/bloom.cc](../src/bloom.cc) | Double hashing, probe-count arithmetic, and a filter that degrades to "maybe" rather than lying when a block is malformed |
+| [src/filename.h](../src/filename.h) | Without a MANIFEST, the directory listing *is* the record of what exists; this parses it |
+
+### Decisions the spec did not dictate
+
+| Decision | Chose | Alternative considered | Why the alternative lost |
+| --- | --- | --- | --- |
+| Recovering sequence numbers after every log is flushed | Write a zero-operation "sequence watermark" record into each newly created log | Read every SSTable at open to find the highest sequence number | The alternative is O(data) work on every open. Without either, numbering restarts at zero and new writes sort as *older* than data already on disk, so reads silently return stale values. See the struggles section -- this was the one real hole in the phase |
+| What records that a table exists | The table file itself, synced, with its directory synced | A small durable file listing the tables | That is the MANIFEST, which is P3. Scanning the directory is enough for P2 and is thrown away rather than built on |
+| An SSTable whose footer does not validate | Delete it during recovery | Keep it and report Corruption | A half-written table is exactly what a crash during a flush leaves, and its data is guaranteed to still be in a log, because a log is only deleted after its table is durable. Refusing to open would make a normal crash unrecoverable |
+| Logs per memtable | A list, not a single number | One log number per memtable | Recovery may replay several logs into one memtable, and all of them must survive until that memtable is flushed |
+| L0 ordering | Newest file first, by file number | Sort by key range | L0 files overlap by nature, since each is whatever keys happened to be written. Only recency can order them |
+| Holding files open for readers | A `shared_ptr` to an immutable vector of readers, copied under the lock | Re-open files per read, or lock across reads | A reader keeps the files it started with alive even as the flush installs a new set. This is P3's Version idea in miniature, and it is what lets a read hold no lock during disk I/O |
+| Flush failure | Record it and stop accepting writes | Retry, or ignore it | A memtable that cannot be flushed will never free its log. Continuing would accumulate unbounded state while pretending to work |
+| On shutdown | Leave a pending memtable unflushed | Flush before closing | Its log is still on disk, so recovery restores it. Flushing would make `Close` take arbitrarily long for no gain in durability |
+| The 1,000,000-key acceptance test | Default 4 MB memtable, batched writes, `kNoSync` | One synced `Put` per key | `kSyncEveryWrite` with `F_FULLFSYNC` would mean a million physical flushes and hours of runtime. Durability has its own dedicated tests; this one is about volume. It runs in 12 seconds |
+| Crash-point testing | A separate helper binary run as a child process | In-process death tests | A crash point calls `_Exit`, which would take the test runner with it. The helper prints each key only *after* its `Put` returns, so its output is exactly the set of acknowledged writes -- the same design P5's fuzzer will use |
+
+### An objection, as the spec asks for one
+
+The spec fixes the data block encoding as "a plain `klen | key | vlen | value` encoding" with
+no per-block checksum; only the footer has one. The implementation follows that exactly.
+
+**The objection:** this means corruption inside a data block is undetectable. The footer
+checksum proves the table was written completely, not that its contents are still intact.
+A flipped bit in a data block will be returned to the caller as a value, silently. Compare
+the WAL, where every record is checksummed and damage is caught.
+
+`ReadOptions::verify_checksums` therefore has nothing to verify at block level, which is
+the clearest sign something is missing.
+
+**What I would change:** add a 4-byte CRC32C to the end of each data block and check it on
+read. The cost is 4 bytes per ~4 KB (0.1%) and one checksum over data already in cache.
+LevelDB and RocksDB both do this. I have not changed it, because the format is specified
+and `docs/DESIGN.md` records the trade-off -- but it is the first thing I would raise before
+P6, since "crash-safe" is the project's headline claim and this is the one place where
+damage goes unreported.
+
+### Bugs that took more than one attempt
+
+**The sequence watermark, which was a genuine design hole rather than a slip.** The first
+implementation flushed memtables and deleted their logs, exactly as the spec describes. It
+passed every test I had written. Then I reasoned through what happens when *all* logs have
+been flushed and deleted: the next open replays a fresh, empty log, learns nothing about
+sequence numbers, and restarts from zero. New writes then get numbers lower than data
+already in the SSTables, so they sort as older, and `Get` returns the stale value -- a
+silent wrong-answer bug, the worst kind for a storage engine.
+
+The fix is one record per log. What is worth keeping is how it was found: not by a failing
+test, but by asking "what is the state of the system after the last log is deleted?" The
+test (`SequenceNumbersContinueAcrossAFullFlushAndReopen`) was written afterwards, to pin it.
+
+**Two test failures that were both my fault, not the engine's.** Worth recording because
+the instinct on a red test is to suspect the code:
+
+1. `SSTableTest.HandlesEmptyAndBinaryKeysAndValues` segfaulted. The cause was my test data:
+   I listed `""`, `"k\0ey"`, `"empty-value"` as sorted, but `'e' < 'k'`, so `"empty-value"`
+   must come second. The builder correctly rejected the out-of-order key; my helper then
+   dereferenced the null reader from the table it had failed to finish. Two lessons: the
+   ordering check earned its place immediately, and a test helper should abort on a null
+   rather than hand it back to segfault at first use.
+2. Two crash-point cases failed on `ASSERT_GT(acknowledged.size(), 0)`. Both
+   `write_before_wal` and `write_after_wal_sync` fire on the very *first* write, so nothing
+   is ever acknowledged and an empty list is the correct result. They are now a separate
+   suite asking the right question -- does the database still open and work? -- while the
+   flush crash points keep the "nothing acknowledged was lost" assertion, where thousands
+   of writes make it meaningful.
+
+### Five questions
+
+1. The flush writes an SSTable, syncs it, syncs the directory, installs it, and only then
+   deletes the log. Why does the directory have to be synced separately from the file, and
+   what breaks if the log is deleted one step earlier?
+2. Recovery finds an SSTable whose footer does not validate. Why is deleting it safe rather
+   than reckless?
+3. Every log has been flushed and deleted. What goes wrong on the next open without the
+   sequence watermark record, and why is the symptom worse than a crash would be?
+4. A `Get` for a key that is in no table at all. How many disk reads does it cost with ten
+   L0 files, and how many without bloom filters?
+5. `MakeRoomForWrite` waits when `imm_` is already set instead of rotating again. What does
+   that waiting actually protect?
+
+#### Answers
+
+1. A file's contents and its *name* are separate pieces of data. Syncing the file makes the
+   bytes durable; the directory entry that gives it a name can still be lost, so the table
+   could vanish after a crash. Deleting the log earlier would leave a window where neither
+   the log nor a durable table holds the data, losing everything the memtable contained.
+2. Because a log is only ever deleted *after* its table is durable, so an invalid table's
+   data is guaranteed to still be in a log that was not deleted. The invalid file is exactly
+   what a crash mid-flush leaves behind. Refusing to open instead would turn an ordinary
+   crash into an unrecoverable database.
+3. Recovery replays an empty log, learns nothing, and restarts sequence numbering from zero.
+   New writes then get sequence numbers lower than entries already in the SSTables, so the
+   ordering rule treats them as older and `Get` returns stale values. It is worse than a
+   crash because nothing fails: the database reports success and serves wrong data.
+4. Usually zero. Each table's bloom filter is consulted in memory, and at ~1% false
+   positives, ten filters give about a 10% chance of a single wasted 4 KB read. Without
+   filters it would be ten reads -- one block from every table -- for a key that exists
+   nowhere.
+5. Memory. Rotating again would hand over a second memtable while the first is still being
+   written, and nothing would stop a third, so a writer faster than the disk could pile up
+   unboundedly many. Waiting keeps at most two memtables alive at once.
+
+### Numbers
+
+Recorded in [NUMBERS.md](NUMBERS.md): the measured bloom filter false-positive rate, the
+1,000,000-key round trip, and the sanitizer results. No throughput numbers yet -- those
+start in P4.
+
+### Gate
+
+Suspended; see [STUDY.md](STUDY.md).

@@ -39,6 +39,23 @@ class MemTable {
   // Bytes of arena the table has claimed. Used to decide when to rotate.
   size_t ApproximateMemoryUsage() const { return arena_.MemoryUsage(); }
 
+  // Walks every entry in sorted internal-key order, which is exactly the order
+  // an SSTable needs them written in. Used by the flush.
+  class Iterator {
+   public:
+    explicit Iterator(const MemTable* table) : iterator_(&table->table_) {}
+
+    void SeekToFirst() { iterator_.SeekToFirst(); }
+    bool Valid() const { return iterator_.Valid(); }
+    void Next() { iterator_.Next(); }
+
+    std::string_view key() const { return iterator_.key(); }
+    std::string_view value() const { return iterator_.value(); }
+
+   private:
+    SkipList::Iterator iterator_;
+  };
+
  private:
   InternalKeyComparator comparator_;
   Arena arena_;

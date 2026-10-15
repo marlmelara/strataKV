@@ -51,6 +51,20 @@ so they are recorded the same way.
 | Lock-free readers alongside one writer | 0 TSan reports | `ctest --preset tsan -R SkipListTest.ReadersScanSafelyWhileOneWriterInserts` | M1 | 2026-10-15 |
 | clang-tidy, curated checks | 0 diagnostics | `./tools/run-clang-tidy.sh build/debug` | M1 | 2026-10-15 |
 
+### P2
+
+| Result | Value | Command | Machine | Date |
+| --- | --- | --- | --- | --- |
+| C++ tests, all four presets | 158/158 passed each, 0 sanitizer reports | `for p in debug release asan tsan; do cmake --preset $p && cmake --build --preset $p && ctest --preset $p; done` | M1 | 2026-10-15 |
+| Bloom filter false-positive rate | **0.729%** (729 of 100,000 absent keys; 10 bits/key, 7 probes, 10,000 keys added) | `./build/debug/tests/cpp/stratakv_tests --gtest_filter='Bloom.FalsePositiveRateIsAboutOnePercent'` | M1 | 2026-10-15 |
+| 1,000,000 keys written, reopened, all read back correctly | passed in 12.4 s (default 4 MB memtable, batched, `kNoSync`) | `ctest --preset debug -R OneMillionKeysSurviveReopen` | M1 | 2026-10-15 |
+| Crash during flush, every acknowledged write recovered | passed for `flush_after_sst_write` and `flush_before_wal_delete` | `ctest --preset debug -R AcceptanceCrashPoints` | M1 | 2026-10-15 |
+| clang-tidy, curated checks | 0 diagnostics | `./tools/run-clang-tidy.sh build/debug` | M1 | 2026-10-15 |
+
+The measured 0.729% sits just under the ~0.8% the theory predicts for 10 bits per key with
+7 probes, which is the expected result: the filter is slightly larger than the exact
+bits-per-key figure because its size is rounded up to whole bytes.
+
 The CI row is what satisfies P0's third acceptance criterion. It covers all four presets on
 both operating systems, the Python package on 3.11 and 3.13, and the lint job. Note that
 the sanitizer results above were produced on Apple Silicon; the Ubuntu x86-64 runners

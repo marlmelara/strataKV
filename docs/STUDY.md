@@ -53,7 +53,7 @@ then Python and testing.
 | --- | --- | --- | --- | --- |
 | P0 | Build system, `Status`, `Options`, `Env`, CRC32C | [P0-scaffold-and-ci.md](learning/P0-scaffold-and-ci.md) | Spec quiz tab + [debrief](DEBRIEF.md#five-questions) | [ ] |
 | P1 | WAL, memtable, skip list, crash recovery | [P1-wal-memtable-recovery.md](learning/P1-wal-memtable-recovery.md) | Spec quiz tab + [debrief](DEBRIEF.md) | [ ] |
-| P2 | SSTables, bloom filters, flush, read path | _pending_ | | [ ] |
+| P2 | SSTables, bloom filters, flush, read path | [P2-sstables-flush-read-path.md](learning/P2-sstables-flush-read-path.md) | Spec quiz tab + [debrief](DEBRIEF.md) | [ ] |
 | P3 | MANIFEST, versions, compaction, merging iterator | _pending_ | | [ ] |
 | P4 | Concurrency and group commit | _pending_ | | [ ] |
 | P5 | Python package, property tests, crash fuzzer | _pending_ | | [ ] |

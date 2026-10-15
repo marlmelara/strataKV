@@ -35,3 +35,22 @@ Each phase appends the terms it introduced.
 | Torn record | A WAL record only partly written when the process died. Normal after a crash, never an error, because it was never acknowledged | `WalReader::Replay` |
 | Trailer | The 8 bytes appended to every user key: 7 of sequence number, 1 of type | `PackSequenceAndType` |
 | WriteBatch | A group of operations that becomes one WAL record with one checksum, so it replays entirely or not at all | `include/stratakv/write_batch.h` |
+
+## P2
+
+| Term | Plain-English meaning | Where it shows up |
+| --- | --- | --- |
+| Background flush | Writing a full memtable out to an SSTable on a separate thread, so writers are not blocked by disk I/O | `DBImpl::BackgroundLoop` |
+| Data block | A ~4 KB run of sorted entries inside an SSTable; the unit a lookup reads | `SSTableBuilder::FlushDataBlock` |
+| Double hashing | Deriving all k bloom probes from one hash by repeatedly adding a rotation of it, instead of computing k hashes | `BloomBuilder::Finish` |
+| False positive | A bloom filter saying "maybe here" for a key that is absent. Costs one wasted disk read, never a wrong answer | `BloomFilter::MayContain` |
+| Filter block | The encoded bloom filter stored inside an SSTable, plus its probe count | `SSTableBuilder::Finish` |
+| Footer | The fixed-size trailer of an SSTable holding the filter and index locations, a magic number, and a checksum. Being last and fixed-size is what lets a reader find everything with one read | `kFooterSize` |
+| Immutable memtable | A full memtable set aside for flushing while a fresh one takes writes. Still readable, never written to again | `DBImpl::imm_` |
+| Index block | One entry per data block, holding that block's last key, so a binary search finds the single block that could hold a key | `SSTableReader::Open` |
+| L0 | The level holding freshly flushed SSTables. Files here overlap in key range, since each is whatever keys happened to be written, so only recency orders them | `DBImpl::l0_` |
+| Magic number | A fixed constant stored in a file so a reader can tell it is the right kind of file at all | `kTableMagic` |
+| Probe | One bit position a bloom filter checks. More probes per key means more evidence, up to a point | `BloomFilter::probes` |
+| Rotation | Retiring a full memtable, starting a new log and memtable, and handing the old one to the flush thread | `DBImpl::MakeRoomForWrite` |
+| Sequence watermark | A zero-operation record at the start of each new log, carrying the current sequence number so numbering survives having every log flushed and deleted | `DBImpl::WriteSequenceWatermark` |
+| SSTable | A sorted, immutable file of entries with its own filter, index, and footer. Never modified after it is written, which is what makes crash safety tractable | `src/sstable_builder.h` |

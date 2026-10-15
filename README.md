@@ -5,11 +5,12 @@ C++20 engine, Python package, crash fuzzer, and benchmarks. In one sentence: a t
 RocksDB — you `put`, `get`, and `delete` keys, every acknowledged write survives
 `kill -9`, and reads stay fast as data grows past memory.
 
-> **Status: P1 of 7 complete.** The write path is real: every acknowledged write reaches
-> a checksummed write-ahead log and is `fsync`ed before `Put` returns, and recovery
-> rebuilds state from that log. SSTables, compaction, group commit, and the Python `DB`
-> class land in P2–P5. There are no benchmark numbers in this README yet because none have
-> been measured — see [docs/NUMBERS.md](docs/NUMBERS.md).
+> **Status: P2 of 7 complete.** Every acknowledged write reaches a checksummed
+> write-ahead log and is `fsync`ed before `Put` returns; full memtables are flushed to
+> immutable SSTables on a background thread, and reads span memtable, immutable memtable,
+> and L0 with bloom filters sparing most lookups any disk read. Compaction, group commit,
+> and the Python `DB` class land in P3–P5. There are no throughput numbers in this README
+> yet because none have been measured — see [docs/NUMBERS.md](docs/NUMBERS.md).
 
 ## What works today
 
@@ -24,7 +25,10 @@ RocksDB — you `put`, `get`, and `delete` keys, every acknowledged write surviv
 | `WriteBatch` | [include/stratakv/write_batch.h](include/stratakv/write_batch.h) | A group of writes that becomes one WAL record with one checksum, so it replays entirely or not at all |
 | WAL | [src/wal_writer.h](src/wal_writer.h), [src/wal_reader.h](src/wal_reader.h) | Checksummed records; a torn tail is truncated, mid-file damage is reported as `Corruption` |
 | Memtable | [src/memtable.h](src/memtable.h), [src/skiplist.h](src/skiplist.h) | Skip list with one writer and any number of lock-free readers |
-| Crash points | [src/crash_point.h](src/crash_point.h) | `STRATAKV_CRASH_AT=<name>` kills the process at a named moment in the write path |
+| Crash points | [src/crash_point.h](src/crash_point.h) | `STRATAKV_CRASH_AT=<name>` kills the process at a named moment in the write or flush path |
+| SSTables | [src/sstable_builder.h](src/sstable_builder.h), [src/sstable_reader.h](src/sstable_reader.h) | Sorted immutable files: data blocks, bloom filter, index, checksummed footer |
+| Bloom filters | [src/bloom.h](src/bloom.h) | 10 bits/key, 7 probes, **measured 0.729%** false-positive rate |
+| Background flush | [src/db_impl.h](src/db_impl.h) | Memtable rotation at 4 MB; a log is deleted only once its table is durable |
 
 ## Building
 

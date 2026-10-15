@@ -6,6 +6,7 @@
 #include <span>
 #include <string>
 #include <string_view>
+#include <vector>
 
 #include "stratakv/status.h"
 
@@ -131,6 +132,10 @@ class Env {
   virtual Status CreateDirIfMissing(const std::string& path) = 0;
 
   virtual bool FileExists(const std::string& path) = 0;
+
+  // Names of the entries in `directory`, excluding "." and "..". Recovery uses
+  // this to find the database's files, since P2 has no MANIFEST listing them.
+  virtual Status GetChildren(const std::string& directory, std::vector<std::string>* result) = 0;
 
   virtual Status GetFileSize(const std::string& path, uint64_t* size) = 0;
 

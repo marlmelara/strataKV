@@ -30,12 +30,15 @@ option(STRATAKV_WERROR "Treat compiler warnings as errors" OFF)
 # ---------------------------------------------------------------------------
 add_library(stratakv
             src/arena.cc
+            src/bloom.cc
             src/crash_point.cc
             src/crc32c.cc
             src/db_impl.cc
             src/env.cc
             src/internal_key.cc
             src/memtable.cc
+            src/sstable_builder.cc
+            src/sstable_reader.cc
             src/status.cc
             src/version.cc
             src/wal_reader.cc
