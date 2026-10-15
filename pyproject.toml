@@ -1,0 +1,48 @@
+[build-system]
+requires = ["scikit-build-core>=0.10", "pybind11>=2.13"]
+build-backend = "scikit_build_core.build"
+
+[project]
+name = "stratakv"
+version = "0.1.0"
+description = "Crash-safe LSM-tree key-value storage engine"
+readme = "README.md"
+requires-python = ">=3.11"
+authors = [{ name = "Marlon Melara" }]
+keywords = ["lsm-tree", "storage-engine", "key-value", "crash-safety", "wal"]
+classifiers = [
+  "Programming Language :: C++",
+  "Programming Language :: Python :: 3",
+  "Topic :: Database :: Database Engines/Servers",
+]
+
+[project.optional-dependencies]
+test = ["pytest>=8.0", "hypothesis>=6.100"]
+bench = ["matplotlib>=3.8"]
+
+[project.urls]
+Repository = "https://github.com/marlmelara/strataKV"
+
+# scikit-build-core runs CMake during `pip install .` and places the compiled
+# extension inside the Python package.
+[tool.scikit-build]
+minimum-version = "0.10"
+cmake.version = ">=3.24"
+build-dir = "build/wheel-{wheel_tag}"
+wheel.packages = ["python/stratakv"]
+
+# The wheel build needs only the extension: no GoogleTest, so no network fetch.
+[tool.scikit-build.cmake.define]
+STRATAKV_BUILD_PYTHON = "ON"
+STRATAKV_BUILD_TESTS = "OFF"
+
+[tool.pytest.ini_options]
+testpaths = ["tests/py"]
+addopts = "-ra"
+
+[tool.ruff]
+line-length = 100
+target-version = "py311"
+
+[tool.ruff.lint]
+select = ["E", "F", "I", "UP", "B", "SIM", "RUF"]
