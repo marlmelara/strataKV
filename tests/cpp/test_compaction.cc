@@ -1,5 +1,6 @@
 #include <algorithm>
 #include <atomic>
+#include <chrono>
 #include <cstdint>
 #include <functional>
 #include <iostream>
@@ -449,13 +450,35 @@ TEST_F(CompactionTest, ReadersAreUnaffectedByAConcurrentCompaction) {
     });
   }
 
+  // EXPECT rather than ASSERT: an ASSERT here returns from the test body
+  // immediately, leaving `stop` unset and the reader threads running against
+  // locals that are about to be destroyed -- and a joinable std::thread whose
+  // destructor runs calls std::terminate. The failure has to be recorded and
+  // then fall through to the cleanup below.
+  Status compaction_status;
   for (int round = 0; round < 3; ++round) {
-    ASSERT_TRUE(impl->TEST_CompactNow().ok());
+    const Status status = impl->TEST_CompactNow();
+    if (compaction_status.ok()) compaction_status = status;
   }
+  EXPECT_TRUE(compaction_status.ok()) << compaction_status.ToString();
+
+  // Three compactions can finish before the reader threads are even scheduled,
+  // in which case `stop` would be set before a single read happened and the
+  // guard below would fail for a reason that has nothing to do with the engine.
+  // Waiting for real reads makes the test depend on behavior rather than on
+  // thread start-up timing. Bounded, so a genuinely stuck reader fails the
+  // assertion instead of hanging the suite.
+  constexpr long kMinimumReads = 200;
+  for (int waited = 0; reads.load(std::memory_order_relaxed) < kMinimumReads && waited < 10000;
+       ++waited) {
+    std::this_thread::sleep_for(std::chrono::milliseconds(1));
+  }
+
   stop.store(true, std::memory_order_release);
   for (auto& reader : readers) reader.join();
 
-  EXPECT_GT(reads.load(std::memory_order_relaxed), 0) << "readers never ran";
+  EXPECT_GE(reads.load(std::memory_order_relaxed), kMinimumReads)
+      << "readers did not get far enough for this to prove anything";
 }
 
 // Reads, writes, and compactions all overlapping, with every key always

@@ -693,21 +693,49 @@ because completeness is only tested at the point something links against all of 
 argues for the Python jobs in CI being genuinely load-bearing rather than a formality -- they
 were the only thing standing between this and a broken release.
 
-### One unresolved observation
+### The intermittent failures, chased down
 
-A four-preset sweep reported a single test failure under `debug` and `release` but not under
-either sanitizer. It has not reproduced since: seven consecutive clean runs of the full
-212-test suite, plus 15/15 under the TSan concurrency stress, plus a later clean sweep.
+A sweep reported one test failing, and single runs would not reproduce it. My first
+explanation was that a second `ctest` had been competing for CPU at the time. **That was
+wrong**, and worth recording as wrong: it reproduced later with nothing else running. CI then
+failed it on three separate jobs, which settled the matter. Two distinct tests were at fault,
+both of them mine rather than the engine's.
 
-The likely cause is self-inflicted. A second `ctest` was running against the same build
-directory at the time, so two suites were competing for CPU, and the timing-sensitive
-concurrency tests are the first to suffer from that. The honest position, though, is that it
-cannot be proven: the sweep captured only the summary line, not the name of the failing
-test, which was a mistake in how the command was written. The sweep now records failing test
-names so a recurrence is diagnosable rather than a mystery.
+**1. `FlushTest.NewerTablesShadowOlderOnes` and `ReadsSpanMemtableImmutableMemtableAndL0`
+asserted a timing-dependent file count.** Both guard against passing vacuously by requiring
+more than one table to exist. With compaction now running automatically, the background
+thread could merge those tables into a single L1 file before the assertion ran -- correct
+engine behavior, which made the guard fail. Reproduced in 1 of 3 ASan runs; the message was
+`actual: 1 vs 1`.
 
-Worth stating rather than quietly dropping. If it reappears in CI, the name will be in the
-log and this note is where to start.
+Worse than the flakiness: when it *passed*, it was no longer testing what its name claims.
+With everything in one file there is no newer table shadowing an older one. Both tests now
+hold automatic compaction off with a high trigger, so several L0 tables genuinely exist and
+cross-table shadowing is what gets verified. 15/15 under ASan afterwards.
+
+**2. `CompactionTest.ReadersAreUnaffectedByAConcurrentCompaction` failed its own vacuity
+guard.** Reproduced on run 33 of 40. The message was the giveaway: `reads` was zero. **No key
+was ever lost** -- the three compactions simply finished before the four reader threads were
+scheduled, so `stop` was set before a single read completed, and the guard that exists to stop
+the test passing vacuously failed instead.
+
+The test had a second, worse defect found while fixing the first: `ASSERT_TRUE` on the
+compaction result in the main thread. An `ASSERT` returns from the test body immediately,
+which would leave `stop` unset, the reader threads running against locals about to be
+destroyed, and a joinable `std::thread` whose destructor calls `std::terminate`. A failing
+compaction would therefore have crashed the suite instead of reporting a failure. It is now an
+`EXPECT` with the status captured, falling through to the cleanup, plus a bounded wait for real
+reads before stopping. 40/40 under ASan afterwards.
+
+**The lesson across both.** Neither was an engine defect, and that is not reassuring on its
+own -- a flaky test is still a broken test, because it trains you to re-run instead of read.
+What made them hard was that each failed for a reason unrelated to what it was testing: one
+because the engine did its job too well, the other because threads had not started yet. Both
+now depend on behavior rather than on timing, and the stress runs that confirm it are recorded
+in [NUMBERS.md](NUMBERS.md).
+
+Also worth keeping: the first sweep captured only the summary line, not the failing test's
+name, which cost a round of guessing. The sweep now records names.
 
 ### Five questions
 

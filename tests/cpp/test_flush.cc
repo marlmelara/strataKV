@@ -100,15 +100,21 @@ TEST_F(FlushTest, CrossingTheMemtableLimitProducesAnSSTable) {
 // The read path has three layers in P2. This drives keys into all of them at
 // once and checks each is consulted in the right order.
 TEST_F(FlushTest, ReadsSpanMemtableImmutableMemtableAndL0) {
-  auto db = OpenOrDie(SmallMemtableOptions());
+  // Automatic compaction is held off so the L0 files this test is about still
+  // exist when it makes its assertions. With compaction on, the background
+  // thread may merge them into a single L1 file first -- correct behavior, but
+  // it leaves the test checking a timing-dependent file count and no longer
+  // exercising a read that spans several tables. Compaction has its own tests.
+  Options options = SmallMemtableOptions();
+  options.l0_compaction_trigger = 100000;
+  auto db = OpenOrDie(options);
   auto* impl = dynamic_cast<DBImpl*>(db.get());
 
   for (int i = 0; i < 2000; ++i) {
     ASSERT_TRUE(db->Put(WriteOptions{}, NumberedKey(i), NumberedValue(i)).ok());
   }
   ASSERT_TRUE(impl->TEST_WaitForBackgroundWork().ok());
-  ASSERT_GT(impl->TEST_FileCount(0) + impl->TEST_FileCount(1), 1U)
-      << "several tables are needed for this to be a test";
+  ASSERT_GT(impl->TEST_FileCount(0), 1U) << "several L0 tables are needed for this to be a test";
 
   // Overwrite a key that is certainly in an old table. The newer value lives in
   // the memtable and must win.
@@ -129,7 +135,11 @@ TEST_F(FlushTest, ReadsSpanMemtableImmutableMemtableAndL0) {
 }
 
 TEST_F(FlushTest, NewerTablesShadowOlderOnes) {
-  auto db = OpenOrDie(SmallMemtableOptions());
+  // Held off for the same reason: the point is that a newer TABLE shadows an
+  // older one, which requires more than one table to still be there.
+  Options options = SmallMemtableOptions();
+  options.l0_compaction_trigger = 100000;
+  auto db = OpenOrDie(options);
   auto* impl = dynamic_cast<DBImpl*>(db.get());
 
   // Write the same key repeatedly, with enough other traffic between writes to
@@ -141,7 +151,7 @@ TEST_F(FlushTest, NewerTablesShadowOlderOnes) {
     }
   }
   ASSERT_TRUE(impl->TEST_WaitForBackgroundWork().ok());
-  ASSERT_GT(impl->TEST_FileCount(0) + impl->TEST_FileCount(1), 1U);
+  ASSERT_GT(impl->TEST_FileCount(0), 1U) << "several L0 tables are needed for this to be a test";
 
   std::string value;
   ASSERT_TRUE(db->Get(ReadOptions{}, "tracked", &value).ok());

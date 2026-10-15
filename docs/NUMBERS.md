@@ -73,6 +73,8 @@ so they are recorded the same way.
 | clang-tidy, curated checks | 0 diagnostics | `./tools/run-clang-tidy.sh build/debug` | M1 | 2026-10-15 |
 | Reads and compactions overlapping | 15/15 consecutive runs, 0 TSan reports | `for i in $(seq 1 15); do ctest --preset tsan -R 'Readers\|Compaction' -E Millions; done` | M1 | 2026-10-15 |
 
+| Flaky-test fixes, stress-verified | `ReadersAreUnaffectedByAConcurrentCompaction` 40/40 (was ~1 in 33); `NewerTablesShadowOlderOnes` + `ReadsSpanMemtableImmutableMemtableAndL0` 15/15 (was ~1 in 3) | repeated `./build/asan/tests/cpp/stratakv_tests --gtest_filter=...` | M1 | 2026-10-15 |
+
 On the 1.44x: the requirement is 1.5x, so the margin is thin and worth understanding rather
 than celebrating. The denominator counts only raw key and value bytes, while the files also
 carry an 8-byte internal-key trailer per entry (about 2.9 MB over 360,035 keys), plus a bloom
