@@ -90,3 +90,15 @@ Each phase appends the terms it introduced.
 | SIGKILL | A signal that cannot be caught or handled: no cleanup, no destructors, no buffer flushing. The closest thing to pulling the power cord | `child.kill()` in `crash_fuzz.py` |
 | Shrinking | After a random failure, Hypothesis searching for the shortest sequence that still fails. What makes a 300-step failure debuggable | Hypothesis, automatically |
 | Strategy | A Hypothesis recipe for generating random values, such as `st.binary(max_size=8)` | `tests/py/test_stateful.py` |
+
+## P6
+
+| Term | Plain-English meaning | Where it shows up |
+| --- | --- | --- |
+| `F_FULLFSYNC` | macOS's "really flush the drive's own cache" request, made through `fcntl`. Plain `fsync` returns once the data reaches the drive, which may still be holding it in volatile memory | `Env::Sync` in `src/env.cc`; `PRAGMA fullfsync=ON` for SQLite |
+| Matched durability | The precondition for any cross-engine comparison: both engines must be promising the same thing. Comparing an engine that flushes against one that does not is the easiest way to publish a flattering number by accident | `open_sqlite` in `bench/bench.py` |
+| Write amplification | Bytes written per byte of user data. **Sharpened in P6:** it is only an LSM figure once the run has actually flushed and compacted. A run smaller than one memtable measures the write-ahead log alone and reports just over 1.0 | `measure_write_amplification` |
+| Load average | Roughly, how many processes wanted the CPU over the last minute. Above about half the core count, a timing measurement is measuring the other processes too | `check_machine_is_quiet` |
+| Page cache (in benchmarking) | Already defined in P0; it matters again here because a file the OS still has in RAM is not a disk read, so whichever engine ran second looked ~3x faster until both were warmed | the warming loop in `bench_stratakv` / `bench_sqlite` |
+| B-tree | The structure SQLite uses: updates rewrite a page in place, so writing a value identical to the one stored can be skipped entirely. An LSM appends regardless, never reading before writing | why the overwrite workload must write *different* bytes |
+| WAL mode (SQLite) | SQLite's write-ahead-log journal mode, its fastest durable configuration. Used throughout so the comparison is against SQLite at its best rather than a straw man | `PRAGMA journal_mode=WAL` |

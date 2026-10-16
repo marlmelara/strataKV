@@ -1229,3 +1229,143 @@ The deviation itself. The spec fixes the data block encoding as "a plain
 `klen | key | vlen | value` encoding", and this no longer matches it byte for byte. The
 objection was raised in the P2 debrief, carried unresolved through P3, P4 and P5, and acted
 on only after the owner agreed. [DESIGN.md](DESIGN.md) records the format as implemented.
+
+## P6 — Benchmarks against SQLite
+
+### What was built
+
+No engine features. A benchmark suite, four charts, a one-command reproduction, and the
+numbers in [NUMBERS.md](NUMBERS.md).
+
+Almost all of the work was in making the measurement mean anything. Four separate bugs in
+the benchmark each produced a *flattering* number, and a fifth produced a write
+amplification figure that was wrong precisely because it looked good.
+
+### The files that matter
+
+| File | What it does |
+| --- | --- |
+| [bench/bench.py](../bench/bench.py) | The suite: matched durability, identical work, load-average gate, and a separate write-amplification measurement |
+| [bench/plot.py](../bench/plot.py) | Reads `results.json` and draws; never runs a benchmark, so re-plotting cannot change a number |
+| [bench/run.sh](../bench/run.sh) | A fresh clone to charts in one command, force-reinstalling the extension so an old build cannot silently be measured |
+
+### Four bugs, every one of them flattering
+
+| Bug | What it made StrataKV look like | Real factor |
+| --- | --- | --- |
+| SQLite not using `F_FULLFSYNC` on macOS | ~2,000x ahead on durable writes | **6x** of the gap was fake |
+| Overwriting a key with the *same* bytes | competitive on overwrites | **395x** — SQLite was skipping the write |
+| No page-cache warming before reads | whichever engine ran second won | **~3x** |
+| Benchmarking on a loaded machine | slow, inconsistently | **3.4x** swing on one workload |
+
+The pattern is worth naming, because it is not coincidence. A benchmark bug that makes
+your own project look *worse* gets investigated immediately — the number is surprising, so
+you go looking. A bug that makes it look better produces exactly the number you were
+hoping for, and nothing prompts you to check. **The direction of a benchmark error
+determines how long it survives**, which is why the flattering ones have to be hunted
+deliberately rather than waited for.
+
+The fourth was caught by accident. The same workload measured 10,196 ops/s and then 34,685
+ops/s, and the only difference was that a property-test sweep and a Spotlight re-index had
+been running during the first one. Nothing in the output said so. `bench.py` now reads the
+load average before starting, refuses to run above half the core count without
+`--allow-busy-machine`, and records the load before and after in the results file.
+
+### The write-amplification figure that was wrong because it was good
+
+The first measurement said **1.02x**. For a log-structured merge tree that is not an
+impressive result, it is an impossible one: an LSM writes each record to the log, then to
+an L0 table, then rewrites it in every compaction that touches it.
+
+The tell was an asymmetry — 1.02x on the durable rows, 2.59x on the buffered ones, same
+engine, same kind of work. Identical engines with different amplification means the
+*workloads* differ. The durable rows run far fewer operations, because each one waits for a
+real disk flush; at 2,000 operations of 1 KB that is about 2 MB against a 4 MB memtable, so
+the run never filled a memtable, never flushed, never compacted, and wrote nothing but the
+log. The write amplification of a write-ahead log alone is just over 1.0.
+
+The fix was not to adjust the number but to measure the right thing. `measure_write_amplification`
+uses a 1 MB memtable and writes keys in random order, so L0 tables overlap and the compactor
+has real merging to do — sequential insertion produces non-overlapping tables, which is the
+easy case. Every throughput row now also records how many SSTables existed when it finished,
+and the output marks a run that never flushed as `(WAL only, never flushed)`, so a figure
+that cannot be an LSM figure says so on its own.
+
+The recorded curve (in [NUMBERS.md](NUMBERS.md)) runs 2.54x at 25,000 keys, 3.11x at
+50,000, 4.20x at 100,000 and **6.73x at 200,000** -- 22.8 MB of user data costing 153 MB of
+writes. That is the design trade-off made visible: writes are fast because they only append,
+and the cost is paid later, repeatedly, by the compactor.
+
+The slope is steeper than a production engine's, and the reason is this engine's shape
+rather than a bug. With **only two levels**, every L0 to L1 compaction rewrites the whole of
+L1, so the cost of touching L1 grows with everything already in it. Engines with five or
+more levels bound this: each level is a fixed multiple of the one above, so a record is
+rewritten a fixed number of times instead of a growing number. Two levels was the right
+scope for this project, and 6.73x is what it costs -- which is a far more useful thing to be
+able to say in an interview than a number with no explanation attached.
+
+### Decisions the spec did not dictate
+
+**Plotting is a separate program from measuring.** `plot.py` reads the recorded JSON and
+cannot run a benchmark. Every published number has to come from a recorded run with a known
+command, machine, and date; if drawing a chart could also produce a number, that chain
+breaks silently.
+
+**The benchmark refuses to run rather than warning.** A warning printed at the top of a
+twenty-minute run is a warning nobody reads by the time the results appear. `--allow-busy-machine`
+exists so the refusal can be overridden deliberately, which is the point — the override is
+recorded in the results file.
+
+**SQLite is given its best configuration, not a straw man.** WAL journal mode throughout,
+which is its fastest durable setting. The easiest way to win a benchmark is to misconfigure
+the other engine, and it is indistinguishable from incompetence afterwards.
+
+### What the numbers actually say
+
+Three conclusions, including the one that does not favor this project:
+
+- **The read-miss advantage widens with value size** — 1.96x at 100 B, **13.1x at 1 KB**.
+  A bloom filter rejects a missing key in constant time regardless of row size; a B-tree's
+  descent costs more as fewer rows fit per page. The widening is the structural result,
+  more than either figure on its own.
+- **Durable single-key writes are close**, which is expected: at one `fsync` per operation
+  both engines are measuring the disk. This is precisely why group commit (P4) mattered —
+  it changes how many flushes there are, which is the only lever software has here.
+- **SQLite is ahead on 3 of the 20 comparisons, all of them durable writes** — sequential
+  fill and random fill at 1 KB, and overwrite at 100 B. That is a real result and it stays
+  in the README. A benchmark that reports only the workloads you win is marketing.
+
+  Worth recording that this conclusion was written twice. The first version said SQLite won
+  at *buffered* writes, which was true of a run taken on a loaded machine and false once the
+  machine was quiet — StrataKV is 1.8x-3.9x ahead there. The load gate was added because of
+  that run, and the wrong conclusion is kept here rather than silently replaced.
+
+### Struggles
+
+The honest summary of this phase is that writing the benchmark took a few hours and
+*distrusting* it took most of the rest. Every bug above was found by asking "is this number
+physically possible?" rather than by a test failing. 305,227 durable writes per second is
+three microseconds each, which no SSD can do; 1.02x write amplification is less rewriting
+than an LSM structurally performs. Both were discovered by arithmetic, not instrumentation.
+
+The general lesson, and the one worth carrying out of this project: **a benchmark is a
+program that produces a number whether or not it is measuring anything.** Nothing fails.
+The number simply appears, and looks like a result.
+
+### Checkpoint questions, written against this code
+
+1. SQLite reported 305,227 durable writes per second before `PRAGMA fullfsync=ON` was set.
+   Explain, from the hardware up, why that number proves the data never reached the medium
+   — and why `fsync()` returning success is not a contradiction.
+2. The overwrite workload originally rewrote each key with the value already stored, and
+   SQLite ran 395x faster that way. Explain what SQLite was able to skip, and why an LSM
+   tree cannot skip the same thing.
+3. Write amplification came out at 1.02x on the durable rows and 2.59x on the buffered
+   rows, for the same engine. Explain what that asymmetry proves about the two workloads,
+   and why the 1.02x is a broken measurement rather than a good result.
+4. `measure_write_amplification` shuffles the keys before writing them. Explain what
+   sequential insertion would do to the L0 tables, and why the resulting figure would
+   understate the real cost.
+5. `plot.py` is forbidden from running a benchmark. Explain what could go wrong if drawing
+   a chart were allowed to measure, in terms of the chain between a published number and
+   the command that produced it.

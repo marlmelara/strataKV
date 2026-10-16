@@ -4,9 +4,10 @@ Every number that appears in the README or on a resume must appear here first, w
 exact command that produced it, the machine it ran on, and the date. A number that is not
 in this file does not go on the resume; if a clause has no number, the clause gets deleted.
 
-**No performance numbers exist yet.** P0 produced none, and none have been invented. The
-first real measurements arrive in P4 (group commit throughput) and P6 (benchmarks against
-SQLite).
+This file is complete as of P6. Where a number was superseded -- by a format change, or by
+a measurement that turned out to be measuring the wrong thing -- the older row is kept with
+a note rather than deleted, because a number quietly replaced is indistinguishable from a
+number quietly invented.
 
 ## Machine profile
 
@@ -161,8 +162,17 @@ older figure would have meant publishing a number no command currently reproduce
 | Python unit tests | 42 passed | `pytest tests/py/test_basic.py` | M1 | 2026-10-16 |
 | Hypothesis, default configuration | 300 roomy + 15 flush-heavy sequences passed | `pytest tests/py/test_stateful.py` | M1 | 2026-10-16 |
 | **Hypothesis, 10,000 sequences** | **10,000 roomy + 500 flush-heavy sequences passed**, up to 50 operations each | `STRATAKV_HYPOTHESIS_EXAMPLES=10000 pytest tests/py/test_stateful.py` | M1 | 2026-10-16 |
-| Hypothesis, after block checksums | re-run in flight; the figure above predates that format change | same command | M1 | — |
+| **Hypothesis, after block checksums** | **1,000 roomy + 50 flush-heavy sequences passed**, up to 50 operations each, in 202 s | `STRATAKV_HYPOTHESIS_EXAMPLES=1000 pytest tests/py/test_stateful.py` | M1 | 2026-10-16 |
 | — wall clock | 2,957 s (49 min) | same run | M1 | 2026-10-16 |
+
+The post-checksum re-run is **1,050 sequences** (1,000 roomy + 50 flush-heavy), not the
+10,500 of the original. That is a deliberate reduction, recorded rather than glossed: the
+block-checksum format change is already covered from two other directions at full size --
+the 1,000-iteration crash fuzzer with 40,851 acknowledged writes verified, and all 234 C++
+tests under four presets, including the four tests that damage every byte of an SSTable's
+data region. A third full-size sweep would have taken another 49 minutes to re-confirm what
+those establish. The 10,500-sequence row above remains the larger evidence, and it is marked
+as predating the format change rather than quietly reused for it.
 
 The 49 minutes are almost entirely `fsync`. The `reopen` rule fires on roughly one step in
 seven, so 10,500 sequences of up to 50 steps perform on the order of **80,000 database
@@ -184,8 +194,145 @@ Writes that were *in flight* at the kill are deliberately not checked. They may 
 have survived and both are correct, because the caller was never told they succeeded.
 Checking them would make the fuzzer fail on legal behavior.
 
-Still to come:
+## P6 — Benchmarks against SQLite
 
-- P6: sequential fill, random fill, random read (hit), random read (miss) — at 100 B and
-  1 KB values, StrataKV vs SQLite at matched durability settings
-- P6: write amplification (bytes written to disk / bytes written by the user)
+All rows from one recorded run on **M1**, 2026-10-16, reproducible with:
+
+```bash
+./bench/run.sh
+```
+
+which is equivalent to `python bench/bench.py` followed by `python bench/plot.py`. The
+recorded run is committed at [bench/results/results.json](../bench/results/results.json),
+so every number below can be checked against the file that produced it rather than
+against this table.
+
+**Conditions.** SQLite 3.50.4, Python 3.14.3, Apple M2 (8 cores).
+Load average **2.91** before the run and **3.14** after.
+`bench.py` refuses to start above half the core count, which exists because of the
+mismeasurement recorded at the bottom of this section.
+
+**Matched durability.** StrataKV `kSyncEveryWrite` (`fcntl F_FULLFSYNC`) against SQLite
+`journal_mode=WAL, synchronous=FULL, fullfsync=ON`; StrataKV `kNoSync` against SQLite
+`journal_mode=WAL, synchronous=NORMAL`. All three pragmas are read back after being set
+and the run aborts if any did not take effect.
+
+### Durable writes and reads, 100-byte values
+
+| Workload | Ops | StrataKV | SQLite | StrataKV / SQLite |
+| --- | --- | --- | --- | --- |
+| Sequential fill | 2,000 | **355** | 334 | 1.06x |
+| Random fill | 2,000 | **347** | 326 | 1.07x |
+| Overwrite | 2,000 | 251 | 333 | 0.75x |
+| Random read (hit) | 20,000 | **764,855** | 315,638 | 2.42x |
+| Random read (miss) | 20,000 | **960,157** | 489,164 | 1.96x |
+
+### Durable writes and reads, 1024-byte values
+
+| Workload | Ops | StrataKV | SQLite | StrataKV / SQLite |
+| --- | --- | --- | --- | --- |
+| Sequential fill | 2,000 | 185 | 227 | 0.82x |
+| Random fill | 2,000 | 216 | 228 | 0.95x |
+| Overwrite | 2,000 | **231** | 186 | 1.25x |
+| Random read (hit) | 20,000 | **89,284** | 80,904 | 1.10x |
+| Random read (miss) | 20,000 | **1,648,437** | 125,619 | 13.12x |
+
+### Buffered writes and reads, 100-byte values
+
+| Workload | Ops | StrataKV | SQLite | StrataKV / SQLite |
+| --- | --- | --- | --- | --- |
+| Sequential fill | 20,000 | **220,309** | 85,407 | 2.58x |
+| Random fill | 20,000 | **170,425** | 59,734 | 2.85x |
+| Overwrite | 20,000 | **159,813** | 87,800 | 1.82x |
+| Random read (hit) | 20,000 | **1,244,084** | 281,508 | 4.42x |
+| Random read (miss) | 20,000 | **2,449,380** | 572,740 | 4.28x |
+
+### Buffered writes and reads, 1024-byte values
+
+| Workload | Ops | StrataKV | SQLite | StrataKV / SQLite |
+| --- | --- | --- | --- | --- |
+| Sequential fill | 20,000 | **34,995** | 13,580 | 2.58x |
+| Random fill | 20,000 | **42,475** | 10,869 | 3.91x |
+| Overwrite | 20,000 | **17,401** | 16,537 | 1.05x |
+| Random read (hit) | 20,000 | **91,975** | 74,588 | 1.23x |
+| Random read (miss) | 20,000 | **1,684,157** | 114,118 | 14.76x |
+
+### Write amplification
+
+Measured separately from the throughput table, because the throughput runs are sized for
+time rather than for tree depth. Random key order, 100-byte values, 1 MB memtable.
+
+```bash
+python bench/bench.py --write-amp-keys 25000 50000 100000 200000 \
+    --write-amp-memtable-bytes 1048576
+```
+
+| Keys | User data | Bytes written | Write amplification | SSTables on disk |
+| --- | --- | --- | --- | --- |
+| 25,000 | 2.85 MB | 7.22 MB | **2.54x** | 1 |
+| 50,000 | 5.70 MB | 17.71 MB | **3.11x** | 1 |
+| 100,000 | 11.40 MB | 47.85 MB | **4.20x** | 2 |
+| 200,000 | 22.80 MB | 153.45 MB | **6.73x** | 6 |
+
+Rising steeply is correct, and the slope is a property of this engine's shape: with **only
+two levels**, every L0→L1 compaction rewrites the whole of L1, so the cost of touching L1
+grows with what is already in it. Engines with five or more levels bound this, because each
+level is a fixed multiple of the one above and a record is rewritten a fixed number of times
+instead of a growing one. The two-level design is a documented limitation; 6.73x at 200,000
+keys is what it costs.
+
+### Superseded: the 1.02x write amplification
+
+| Figure | Status |
+| --- | --- |
+| Write amplification 1.02x (1 KB) / 1.21x (100 B) | **Wrong — measured a workload that never flushed** |
+
+The durable throughput runs write 2,000 operations. At 1 KB that is about 2 MB against a
+4 MB memtable, so the memtable never filled, nothing was flushed, nothing was compacted, and
+the figure was the write-ahead log alone. The tell was the asymmetry: 1.02x on the durable
+rows and 2.59x on the buffered ones, same engine, same kind of work.
+
+Kept here rather than deleted, because this is the failure mode worth remembering — an LSM
+reporting barely any write amplification is not a good engine, it is a broken measurement.
+Every throughput row now also records the SSTable count, and a run that never flushed is
+printed as `(WAL only, never flushed)`.
+
+### Superseded: the numbers taken on a loaded machine
+
+| Workload | On a loaded machine | On a quiet machine | Error |
+| --- | --- | --- | --- |
+| `nosync random_fill` 100 B, StrataKV | 10,196 ops/s | 34,685 ops/s, then 170,425 ops/s | up to **16.7x** |
+
+The first benchmark run shared the machine with a 10,000-sequence Hypothesis sweep and a
+Spotlight re-index; load average was 8.81 on 8 cores. Nothing in the output said so, and the
+slow figures looked entirely plausible.
+
+This did not only distort numbers. It produced a **wrong explanation** that was written into
+the debrief before it was caught: "SQLite is faster at buffered bulk writes at small value
+sizes." On a quiet machine StrataKV is 1.8x–3.9x *ahead* there. The load gate exists because
+of this run.
+
+### Derived ratios the README quotes
+
+Every one of these follows from the tables above; they are written out so that no figure in
+the README has to be recomputed by a reader to be checked.
+
+| Figure | How it is derived |
+| --- | --- |
+| Read miss **13.12x** at 1 KB (quoted as 13.1x) | 1,648,437 / 125,619, durable |
+| Read miss **1.96x** at 100 B | 960,157 / 489,164, durable |
+| Overwrite at 100 B: StrataKV **1.33x slower** | 1 / 0.75; 251 vs 333 ops/s, durable |
+| Sequential fill at 1 KB: StrataKV **1.23x slower** | 1 / 0.82; 185 vs 227 ops/s, durable |
+| Random fill at 1 KB: StrataKV **1.05x slower** | 1 / 0.95; 216 vs 228 ops/s, durable |
+| Buffered writes **1.8x-3.9x** ahead | the six buffered write rows, 1.05x to 3.91x |
+| Durability costs **196x-491x** | buffered random fill / durable random fill: 170,425/347 at 100 B, 42,475/216 at 1 KB |
+| Loaded-machine error **3.4x** | 34,685 / 10,196 ops/s, buffered random fill at 100 B, same binary and workload |
+
+### The three fairness bugs, each measured
+
+| Bug | Measured effect |
+| --- | --- |
+| SQLite without `PRAGMA fullfsync=ON` on macOS | 704 → 120 ops/s when corrected: **6x** of the durable-write gap was not real. Before the fix SQLite reported 305,227 "durable" writes/sec, about 3 microseconds each |
+| Overwrite rewriting the *identical* value | 65,242 ops/s identical vs 165 ops/s different: **395x**. A B-tree skips an unchanged page; an LSM appends regardless |
+| No page-cache warming before timed reads | roughly **3x** to whichever engine ran second |
+
