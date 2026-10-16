@@ -9,8 +9,10 @@ description = "Crash-safe LSM-tree key-value storage engine"
 readme = "README.md"
 requires-python = ">=3.11"
 authors = [{ name = "Marlon Melara" }]
+license = { file = "LICENSE" }
 keywords = ["lsm-tree", "storage-engine", "key-value", "crash-safety", "wal"]
 classifiers = [
+  "License :: OSI Approved :: MIT License",
   "Programming Language :: C++",
   "Programming Language :: Python :: 3",
   "Topic :: Database :: Database Engines/Servers",
