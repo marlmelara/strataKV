@@ -144,7 +144,7 @@ jobs:
             | xargs clang-format --dry-run --Werror
 
       - name: ruff
-        run: ruff check python tests/py tools && ruff format --check python tests/py tools
+        run: ruff check python tests/py tools bench scripts && ruff format --check python tests/py tools bench scripts
 
       # Catches a file that compiles only because some other header pulled in
       # what it uses. That is luck, not portability: it broke every Linux job
