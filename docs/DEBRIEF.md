@@ -1078,10 +1078,15 @@ The acceptance criteria, both met and recorded in [NUMBERS.md](NUMBERS.md):
 - **Crash fuzzer, 1,000 iterations: 43,088 acknowledged writes verified, zero lost, zero
   corruption errors.** 501 killed by raw `SIGKILL`, 499 by an armed crash point, all seven
   points exercised 124–160 times each.
-- **Hypothesis**: the default configuration (300 roomy plus 15 flush-heavy sequences) passes;
-  the 10,000-sequence acceptance run is recorded in [NUMBERS.md](NUMBERS.md) once it
-  completes. Each sequence is up to 50 random operations against a dict model, with reopens
-  mixed in.
+- **Hypothesis: 10,000 random operation sequences** against a dict model, plus 500 more with
+  a memtable small enough to flush on nearly every write. Up to 50 operations per sequence,
+  with reopens mixed in, so on the order of half a million operations in total. 49 minutes.
+
+The 49 minutes are a finding in their own right. The `reopen` rule means roughly 80,000
+database opens, and an open does six to eight real `F_FULLFSYNC` calls regardless of the
+database's sync policy -- metadata durability does not follow the write policy, which is
+correct but means an open-and-close-heavy workload pays far more than its write count
+suggests. Reducing it is a legitimate optimization, not a test problem.
 
 CI runs a 50-iteration fuzz and the full Python suite on every push.
 

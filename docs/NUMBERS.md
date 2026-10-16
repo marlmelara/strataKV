@@ -149,7 +149,19 @@ measured claim on a named machine as the spec requires.
 | — wall clock | 459 s | same run | M1 | 2026-10-16 |
 | Python unit tests | 42 passed | `pytest tests/py/test_basic.py` | M1 | 2026-10-16 |
 | Hypothesis, default configuration | 300 roomy + 15 flush-heavy sequences passed | `pytest tests/py/test_stateful.py` | M1 | 2026-10-16 |
-| Hypothesis, 10,000 sequences | _run in flight; recorded in the follow-up commit_ | `STRATAKV_HYPOTHESIS_EXAMPLES=10000 pytest tests/py/test_stateful.py` | M1 | — |
+| **Hypothesis, 10,000 sequences** | **10,000 roomy + 500 flush-heavy sequences passed**, up to 50 operations each | `STRATAKV_HYPOTHESIS_EXAMPLES=10000 pytest tests/py/test_stateful.py` | M1 | 2026-10-16 |
+| — wall clock | 2,957 s (49 min) | same run | M1 | 2026-10-16 |
+
+The 49 minutes are almost entirely `fsync`. The `reopen` rule fires on roughly one step in
+seven, so 10,500 sequences of up to 50 steps perform on the order of **80,000 database
+opens**, and each open does a MANIFEST record, the four-step `CURRENT` replacement, a new log
+with its sequence watermark, and a directory sync — six to eight real `F_FULLFSYNC` calls at
+about 2.7 ms each.
+
+Worth stating because it is a finding rather than just a cost: opening a database is
+expensive even when it was opened with `sync=False`, because the durability of the *metadata*
+does not follow the write policy. That is correct behavior, and it also means a workload
+that opens and closes constantly pays far more than its writes suggest.
 
 This is the row the whole project exists to produce. "Acknowledged" means `put` returned:
 the child process prints each key only after that, so the set the parent reads is exactly
