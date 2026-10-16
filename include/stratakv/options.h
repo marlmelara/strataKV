@@ -26,6 +26,16 @@ struct Options {
   bool create_if_missing = true;
   bool error_if_exists = false;
 
+  // Let a writer merge the batches queued behind it into one log record with a
+  // single fsync shared between them.
+  //
+  // An fsync costs about the same for 100 bytes as for 100 KB, so sharing one
+  // across many writers multiplies throughput under load. Turning this off
+  // gives every writer its own record and its own fsync, which is the baseline
+  // the P4 measurement compares against -- it exists to be measured, not
+  // because anyone should run with it off.
+  bool enable_group_commit = true;
+
   // --- Set in later phases, declared here so the shape of the engine is
   // --- visible from the start. ---
 

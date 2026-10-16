@@ -777,3 +777,149 @@ name, which cost a round of guessing. The sweep now records names.
 ### Gate
 
 Suspended; see [STUDY.md](STUDY.md).
+
+---
+
+## P4 — Concurrency and group commit
+
+### What was built
+
+Writers no longer take turns paying for their own `fsync`. They queue, and the one at the
+front becomes the leader: it merges the batches waiting behind it into a single log record,
+issues one `fsync` for all of them, inserts them into the memtable, and then hands each
+waiting thread its result. The lock is released across the append and the sync, so writers
+arriving during it form the next group -- which is why throughput rises with load rather
+than flattening. An `Env` fault-injection hook finally makes the flush and compaction
+failure branches testable, closing a gap both the P2 and P3 debriefs had flagged as
+reviewed-but-unexecuted.
+
+### The files that matter
+
+| File | What it does |
+| --- | --- |
+| [src/db_impl.cc](../src/db_impl.cc) | `Write` and `BuildBatchGroup`: the queue, the leader handover, the merge rules, and the unlocked I/O section |
+| [src/db_impl.h](../src/db_impl.h) | The `Writer` struct and the queue. A writer lives on its own thread's stack; others reach it through the pointer |
+| [src/env.cc](../src/env.cc) | Fault injection, so an I/O failure can be produced on demand at exactly one path |
+| [tests/cpp/test_group_commit.cc](../tests/cpp/test_group_commit.cc) | Correctness first -- a writer's result is produced by another thread -- then the 60-second stress and the throughput measurement |
+
+### Decisions the spec did not dictate
+
+| Decision | Chose | Alternative considered | Why the alternative lost |
+| --- | --- | --- | --- |
+| A follower that asked for a sync, behind a leader that did not | Stop the group there; that writer leads the next one | Fold it in anyway | Folding it in would silently give it weaker durability than it asked for. The reverse is fine: a writer that did not ask for a sync may be swept into one that does, since stronger durability harms nobody |
+| Group size | Capped at 1 MB, tightened to 128 KB when the leader's own batch is small | No cap | Without a cap, one enormous batch at the front makes every short write behind it wait for megabytes of I/O. The second cap stops a small write being delayed by a group that grew behind it |
+| Waking writers | `notify_one` on each writer's own condition variable | One shared variable and `notify_all` | A wake-up reaches exactly the thread it concerns instead of stampeding every waiter, which matters at eight writers and matters more at eighty |
+| `enable_group_commit` option | Added | Measure against the previous commit | A flag makes the comparison a test that runs on demand and cannot drift, rather than a number someone has to reproduce by checking out old code. It exists to be measured, not because anyone should run with it off |
+| Where the leader inserts into the memtable | Outside the lock, with raw pointers captured under it | Inside the lock | The insert is the second-slowest thing in the write path. Capturing the pointers under the lock makes the safety argument unnecessary rather than merely true -- and the queue already guarantees exactly one leader, which is the skip list's contract |
+| Fault injection | On `Env`, matching a path substring, with a bounded count | A mock Env, or a compile-time flag | `Env` is the only place the engine touches the OS, so one hook covers every path that can fail. Bounding the count stops an armed failure leaking into later tests, and matching on a substring means a test can fail a table write without failing the log |
+| Stress duration | 60 seconds, overridable by `STRATAKV_STRESS_SECONDS` | Hardcode 60, or pick something shorter | 60 seconds is the acceptance criterion and is the default, so the bar is met by default. The override exists only to keep local iteration bearable; CI never sets it |
+
+### Measured numbers
+
+With 8 writers and `kSyncEveryWrite`, so every write really reaches the disk:
+
+| | writes/sec |
+| --- | --- |
+| Group commit off | 372 |
+| Group commit on | **1,765** |
+| **Speed-up** | **4.74x** |
+
+The requirement was 3x. The release build measured 4.72x -- essentially identical, which is
+the expected result and worth noting: the measurement is dominated by `fsync` latency, not
+by CPU, so optimization does not move it. Working backwards, 372 writes/sec across 8 writers
+each doing their own sync implies about 2.7 ms per `F_FULLFSYNC` on this disk, which is a
+believable figure for a real cache flush.
+
+The 60-second stress under ThreadSanitizer: **76,538 writes and 5,840,860 reads, zero
+reports**, with compaction running throughout.
+
+### Bugs that took more than one attempt
+
+None in this phase, and this time that is worth a sentence rather than a shrug. Group commit
+is the most intricate code in the project -- a writer's work is done by another thread, the
+lock is dropped halfway through, and the single-writer contract the skip list depends on is
+upheld by nothing more than queue position. It went in without a correctness bug because the
+three invariants were settled before any code was written:
+
+1. Only `writers_.front()` proceeds, so there is exactly one leader, which is exactly the
+   skip list's one-writer rule.
+2. A leader stays at the front until it pops itself, so no second leader can appear while the
+   lock is released.
+3. Everything the unlocked section touches is captured under the lock first, so "is this
+   access safe?" never has to be argued at all.
+
+Writing those down first is why the 216 existing tests passed on the first run with the new
+write path, and why the 60-second TSan stress was clean the first time.
+
+### Bugs in the tests, including the same mistake twice
+
+The engine code went in clean. My tests did not, and one of them is worth recording because
+it repeated a mistake I had fixed hours earlier.
+
+**`AFailedCompactionStopsAcceptingWrites` failed in the release build.** It wrote data,
+waited for background work, armed a single injected failure, then asked for a compaction and
+expected it to fail. But with automatic compaction on, the background thread may already
+have drained L0 by then -- so the requested compaction had nothing to do, succeeded, and the
+test failed for a reason unrelated to what it was testing.
+
+That is **exactly** the class of bug I had just finished fixing in three P3 tests: asserting
+something that depends on background-thread timing rather than on behavior. Having named the
+pattern in the P3 debrief, I then wrote it again the same session. The fix is the same one:
+hold automatic compaction off so there is guaranteed work to fail, and assert there are L0
+files before arming the failure. 10/10 afterwards in both debug and release.
+
+The lesson is sharper the second time. In a database with background threads, **any test that
+observes a count, a file, or a level is implicitly racing the background thread** unless it
+has deliberately stopped it. "Wait for background work, then assert" is not sufficient,
+because waiting for background work is also waiting for it to have *changed* things. The
+default for a test that needs a particular on-disk shape should be to disable the automation
+and construct that shape explicitly.
+
+`AFailedFlushStopsAcceptingWrites` had a milder version of the same problem -- a compaction
+could have consumed the single armed failure instead of the flush -- and got the same
+treatment, plus a tightened assertion that writes must actually be refused rather than the
+loose "one of these two things went wrong".
+
+**A tooling note.** My sweep command reported asan as having failures when it had none: the
+grep that extracts failing test names also matched ctest's list of *skipped* tests. Two tests
+are deliberately skipped under the sanitizers, so a clean run looked dirty. The pattern now
+excludes skips. Worth recording because for a minute I believed a passing run had failed,
+which is the opposite of the usual danger but just as misleading.
+
+### Five questions
+
+1. Eight threads call `Put` simultaneously. How many `fsync`s happen, and whose thread does
+   the work for the other seven?
+2. The leader releases the lock before the append and the `fsync`. What stops a second thread
+   becoming a leader and writing to the memtable at the same time?
+3. A writer that asked for `sync` arrives behind a leader that did not. Why can it not simply
+   be added to the group?
+4. Why does group commit get *faster* as more threads write, rather than just not getting
+   slower?
+5. What is `enable_group_commit` for, given nobody should ever turn it off?
+
+#### Answers
+
+1. One, in the best case. The first thread to reach the front becomes the leader, merges the
+   other seven batches into its own record, and does a single append and a single `fsync`. The
+   other seven sleep, then wake to find their `status` already filled in by the leader's
+   thread and return it as their own.
+2. Queue position. Only `writers_.front()` leaves the wait, and the leader stays at the front
+   until it pops itself at the very end. So there is exactly one leader at any moment, which
+   is precisely the single-writer contract the skip list requires -- no extra lock needed.
+3. Because the group is not going to call `fsync`, so that writer would be told its write
+   succeeded while the record is still only in the page cache -- a weaker guarantee than it
+   asked for. The group stops at that writer instead, and it leads the next group and gets
+   its own sync. The opposite direction is harmless: being swept into a group that syncs gives
+   a writer more durability than it requested.
+4. Because the queue fills while the leader is inside the slow `fsync`. More concurrent
+   writers means more batches waiting when the leader finishes, so the next group is larger
+   and the per-write cost of the shared `fsync` falls. The thing that would otherwise be pure
+   contention becomes the source of the speed-up.
+5. Measuring. It exists so the 4.7x figure is produced by a test that runs on demand and
+   compares two live code paths, rather than being a number someone has to reproduce by
+   checking out an old commit. A claim on a resume should be re-runnable.
+
+### Gate
+
+Suspended; see [STUDY.md](STUDY.md).

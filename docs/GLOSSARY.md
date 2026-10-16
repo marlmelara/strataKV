@@ -69,3 +69,13 @@ Each phase appends the terms it introduced.
 | Version | An immutable snapshot of the file set, reference counted. Holding one guarantees its files stay open and undeleted | `src/version.h` |
 | Version edit | One recorded change to the file set: files added, files removed, counters updated | `VersionEdit` |
 | Write amplification | Bytes written to disk per byte the user wrote. Compaction spends it to buy back read and space amplification | `CompactLevel0` |
+
+## P4
+
+| Term | Plain-English meaning | Where it shows up |
+| --- | --- | --- |
+| Fault injection | Making an operation fail on demand, so error-handling code can actually be executed by a test rather than merely reviewed | `Env::SetFailureInjectionForTesting` |
+| Group commit | Merging several writers' batches into one log record with a single shared `fsync`. Measured 4.7x faster at 8 writers | `DBImpl::BuildBatchGroup` |
+| Leader / follower | The writer at the front of the queue does the log append and the `fsync` for everyone it merges; the others sleep and collect its result | `DBImpl::Write` |
+| Thundering herd | Waking many threads for an event only one can act on, so nearly all immediately sleep again. Avoided by giving each writer its own condition variable | `Writer::cv` |
+| Throughput | Operations completed per second. The number group commit exists to raise, as opposed to latency, which it slightly raises for the leader | [NUMBERS.md](NUMBERS.md) |

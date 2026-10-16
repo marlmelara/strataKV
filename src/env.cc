@@ -5,6 +5,7 @@
 #include <cstdint>
 #include <cstring>
 #include <memory>
+#include <mutex>
 #include <span>
 #include <string>
 #include <string_view>
@@ -27,6 +28,32 @@ constexpr mode_t kDirMode = 0755;
 
 Status PosixError(const std::string& path, int err) {
   return Status::IOError(path, std::strerror(err));
+}
+
+// Test-only fault injection state. Atomic so a test may arm it from one thread
+// while the background thread reads it from another.
+std::mutex& InjectionMutex() {
+  static std::mutex mutex;
+  return mutex;
+}
+
+std::string& InjectionSubstring() {
+  static std::string substring;
+  return substring;
+}
+
+int& InjectionRemaining() {
+  static int remaining = 0;
+  return remaining;
+}
+
+// True when this path should be failed, consuming one of the armed failures.
+bool ShouldInjectFailure(const std::string& path) {
+  const std::lock_guard<std::mutex> guard(InjectionMutex());
+  if (InjectionRemaining() <= 0 || InjectionSubstring().empty()) return false;
+  if (path.find(InjectionSubstring()) == std::string::npos) return false;
+  --InjectionRemaining();
+  return true;
 }
 
 // Writes every byte, looping past short writes and retrying when a signal
@@ -174,6 +201,9 @@ class PosixFileLock final : public FileLock {
 class PosixEnv final : public Env {
  public:
   Status NewWritableFile(const std::string& path, std::unique_ptr<WritableFile>* out) override {
+    if (ShouldInjectFailure(path)) {
+      return Status::IOError(path, "injected failure (test only)");
+    }
     const int fd = ::open(path.c_str(), O_WRONLY | O_CREAT | O_TRUNC, kFileMode);
     if (fd < 0) return PosixError(path, errno);
     *out = std::make_unique<PosixWritableFile>(fd, path);
@@ -333,6 +363,12 @@ class PosixEnv final : public Env {
 };
 
 }  // namespace
+
+void Env::SetFailureInjectionForTesting(std::string_view path_substring, int count) {
+  const std::lock_guard<std::mutex> guard(InjectionMutex());
+  InjectionSubstring().assign(path_substring);
+  InjectionRemaining() = count;
+}
 
 Env& Env::Default() {
   // Function-local static: constructed once, on first use, thread-safely.

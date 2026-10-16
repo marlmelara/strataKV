@@ -14,6 +14,7 @@ add_executable(stratakv_tests
                test_flush.cc
                test_env.cc
                test_filename.cc
+               test_group_commit.cc
                test_internal_key.cc
                test_memtable.cc
                test_merging_iterator.cc

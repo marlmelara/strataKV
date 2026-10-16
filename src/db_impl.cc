@@ -3,6 +3,8 @@
 #include <algorithm>
 #include <condition_variable>
 #include <cstdint>
+#include <deque>
+#include <iterator>
 #include <memory>
 #include <mutex>
 #include <set>
@@ -31,6 +33,14 @@
 
 namespace stratakv {
 namespace {
+
+// An upper bound on a merged group, so a very large batch at the front cannot
+// make every writer behind it wait for megabytes of I/O.
+constexpr size_t kGroupCommitMaxBytes = 1 << 20;
+
+// When the leader's own batch is small, keep the group small too: a short write
+// should not be delayed by a group that grew to the full limit behind it.
+constexpr size_t kGroupCommitSmallBatchBytes = 128 << 10;
 
 std::span<const uint8_t> AsBytes(std::string_view text) {
   return {reinterpret_cast<const uint8_t*>(text.data()), text.size()};
@@ -270,40 +280,117 @@ Status DBImpl::MakeRoomForWrite(std::unique_lock<std::mutex>& lock) {
   }
 }
 
+DBImpl::Writer* DBImpl::BuildBatchGroup(std::string* operations, uint32_t* count, bool* sync) {
+  Writer* leader = writers_.front();
+  operations->assign(leader->batch->Contents());
+  *count = leader->batch->Count();
+  *sync = leader->sync;
+  Writer* last = leader;
+
+  if (!options_.enable_group_commit) return last;
+
+  size_t limit = kGroupCommitMaxBytes;
+  if (operations->size() < kGroupCommitSmallBatchBytes) {
+    limit = operations->size() + kGroupCommitSmallBatchBytes;
+  }
+
+  for (auto it = std::next(writers_.begin()); it != writers_.end(); ++it) {
+    Writer* candidate = *it;
+
+    // A follower that asked for a sync cannot be folded into a group that is
+    // not going to sync: that would silently give it a weaker guarantee than
+    // it requested. Stop the group here instead; it becomes the next leader.
+    if (candidate->sync && !*sync) break;
+
+    if (operations->size() + candidate->batch->Contents().size() > limit) break;
+
+    operations->append(candidate->batch->Contents());
+    *count += candidate->batch->Count();
+    last = candidate;
+  }
+  return last;
+}
+
 Status DBImpl::Write(const WriteOptions& options, WriteBatch* batch) {
   if (batch == nullptr) return Status::InvalidArgument("batch", "must not be null");
   if (batch->empty()) return Status::OK();
 
+  // WriteOptions::sync can relax durability for one write; it cannot strengthen
+  // it past the database's own policy.
+  Writer self;
+  self.batch = batch;
+  self.sync = options_.sync_policy == SyncPolicy::kSyncEveryWrite && options.sync;
+
   std::unique_lock<std::mutex> lock(mutex_);
   if (closed_) return Status::InvalidArgument("db", "is closed");
 
-  if (auto s = MakeRoomForWrite(lock); !s.ok()) return s;
+  writers_.push_back(&self);
+  // Sleep until either a leader has written our batch for us, or we have
+  // reached the front and become the leader ourselves.
+  self.cv.wait(lock, [this, &self] { return self.done || &self == writers_.front(); });
+  if (self.done) return self.status;
 
-  const uint64_t sequence = versions_->last_sequence() + 1;
-  if (batch->Count() > kMaxSequenceNumber - sequence) {
-    return Status::InvalidArgument("db", "sequence number space exhausted");
+  // From here we are the leader. Nobody else writes while we hold the front of
+  // the queue, which is also what keeps the single-writer contract the skip
+  // list depends on.
+  Status status = MakeRoomForWrite(lock);
+
+  std::string operations;
+  uint32_t count = 0;
+  bool group_sync = self.sync;
+  Writer* last = &self;
+  uint64_t sequence = 0;
+
+  if (status.ok()) {
+    last = BuildBatchGroup(&operations, &count, &group_sync);
+    sequence = versions_->last_sequence() + 1;
+    if (count > kMaxSequenceNumber - sequence) {
+      status = Status::InvalidArgument("db", "sequence number space exhausted");
+    }
   }
 
-  const std::string payload = EncodeRecordPayload(sequence, batch->Count(), batch->Contents());
+  if (status.ok()) {
+    // Captured under the lock so the unlocked section below touches no shared
+    // state: only the leader ever changes these, and right now that is us.
+    WalWriter* wal = wal_.get();
+    MemTable* memtable = mem_.get();
+    const std::string payload = EncodeRecordPayload(sequence, count, operations);
 
-  // WriteOptions::sync can relax durability for one write; it cannot strengthen
-  // it past the database's own policy.
-  const bool sync = options_.sync_policy == SyncPolicy::kSyncEveryWrite && options.sync;
+    crash::CrashPoint("write_before_wal");
 
-  crash::CrashPoint("write_before_wal");
+    // The lock is released across the append and the fsync. That is the whole
+    // point: the slow part happens while new writers pile up behind us, and
+    // they become the next group. Throughput therefore rises with load.
+    lock.unlock();
+    status = wal->AddRecord(AsBytes(payload), group_sync);
 
-  // The order here is the entire durability guarantee. The record reaches the
-  // log and is synced BEFORE the memtable is touched and before the caller is
-  // told OK.
-  if (auto s = wal_->AddRecord(AsBytes(payload), sync); !s.ok()) return s;
+    crash::CrashPoint("write_after_wal_sync");
 
-  crash::CrashPoint("write_after_wal_sync");
+    // Only after the record is durable does anything become visible in memory.
+    if (status.ok()) {
+      MemTableInserter inserter(sequence, memtable);
+      status = WriteBatch::IterateContents(operations, count, inserter);
+    }
+    lock.lock();
 
-  MemTableInserter inserter(sequence, mem_.get());
-  if (auto s = batch->Iterate(inserter); !s.ok()) return s;
+    if (status.ok()) versions_->set_last_sequence(sequence + count - 1);
+  }
 
-  versions_->set_last_sequence(inserter.next_sequence() - 1);
-  return Status::OK();
+  // Hand the result to everyone whose batch we just wrote, and wake them.
+  while (true) {
+    Writer* front = writers_.front();
+    writers_.pop_front();
+    if (front != &self) {
+      front->status = status;
+      front->done = true;
+      front->cv.notify_one();
+    }
+    if (front == last) break;
+  }
+
+  // Whoever is now at the front becomes the next leader.
+  if (!writers_.empty()) writers_.front()->cv.notify_one();
+  return status;
 }
 
 Status DBImpl::Get(const ReadOptions& /*options*/, std::string_view key, std::string* value) {

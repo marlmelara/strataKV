@@ -477,3 +477,67 @@ destructor cannot be forgotten.
 This is the general lesson: whenever two operations must be paired, put the second one in a
 destructor rather than trusting every exit path. Python's `contextlib.contextmanager` is the
 closest equivalent.
+
+## P4
+
+### `std::deque<T>`
+
+A double-ended queue: push and pop cheaply at either end, unlike `std::vector` which is only
+cheap at the back. The writer queue needs `push_back` and `pop_front`, which is exactly what
+a deque is for. Python: `collections.deque`.
+
+### A condition variable per waiter
+
+```cpp
+struct Writer {
+  ...
+  std::condition_variable cv;
+};
+```
+
+Each waiting writer carries its own condition variable, so a wake-up goes to exactly the
+thread it concerns. One shared variable plus `notify_all` would wake every waiter so they
+could all re-check their predicate and almost all go back to sleep — a *thundering herd*.
+At eight writers it hardly matters; the habit matters.
+
+`notify_one` wakes one waiter on that variable; `notify_all` wakes every waiter. With one
+variable per writer there is only ever one waiter, so `notify_one` is both sufficient and
+precise.
+
+### Pointers to stack objects shared across threads
+
+```cpp
+Writer self;              // on this thread's stack
+writers_.push_back(&self); // other threads will reach it through this pointer
+```
+
+This looks alarming and is safe, for one specific reason: the thread that owns `self` blocks
+inside the same function for as long as the pointer is in the queue, so the object cannot go
+out of scope while anyone can see it. No allocation, no shared ownership, no lifetime
+question.
+
+It is only safe because of that structure. The same pattern with a thread that returned
+early — or with an `ASSERT` that returns from the middle of a function — would leave other
+threads holding a pointer to a destroyed object. A test in this project had exactly that bug.
+
+### `std::next(iterator)`
+
+Returns the iterator one position along, without modifying the original. `std::next(begin())`
+is "the second element" — clearer than `begin() + 1`, and it works on containers like
+`std::deque` and `std::list` whose iterators do not support arithmetic.
+
+### `std::chrono` for timing
+
+```cpp
+const auto started = std::chrono::steady_clock::now();
+...
+const auto elapsed = std::chrono::duration<double>(
+    std::chrono::steady_clock::now() - started).count();
+```
+
+`steady_clock` is the right clock for measuring a duration: it only moves forward and is
+unaffected by the system clock being adjusted. `system_clock` is for telling the time, and
+can jump backwards. Subtracting two time points gives a `duration`; wrapping it in
+`duration<double>` and calling `.count()` gives seconds as a plain number.
+
+`std::this_thread::sleep_for(std::chrono::seconds(60))` is Python's `time.sleep(60)`.

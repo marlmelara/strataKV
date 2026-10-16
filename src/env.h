@@ -83,6 +83,17 @@ class FileLock {
 
 class Env {
  public:
+  // Test-only fault injection.
+  //
+  // The flush and compaction failure paths set a sticky error and stop
+  // accepting writes. Reaching them needs an I/O failure on demand, which this
+  // provides: the next `count` operations whose path contains `substring` fail
+  // with an IOError. Passing an empty substring disarms it.
+  //
+  // Lives on Env because that is the only place the engine touches the
+  // operating system, so one hook covers every path that can fail.
+  static void SetFailureInjectionForTesting(std::string_view path_substring, int count);
+
   // The process-wide POSIX implementation. Returned by reference because there
   // is exactly one and nobody owns it.
   static Env& Default();

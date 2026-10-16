@@ -617,6 +617,86 @@ TEST_F(CompactionTest, AFileTheManifestListsButIsMissingIsReported) {
   EXPECT_EQ(db, nullptr);
 }
 
+// The failure branches, finally testable. Both the flush and the compaction
+// record a sticky error and stop accepting writes rather than carrying on with
+// a memtable that can never be flushed or a level that can never be compacted.
+//
+// Until P4 added fault injection to Env these three lines were reviewed but
+// never executed, which the P2 and P3 debriefs said outright.
+class FailureInjectionTest : public CompactionTest {
+ protected:
+  void TearDown() override { Env::SetFailureInjectionForTesting("", 0); }
+};
+
+TEST_F(FailureInjectionTest, AFailedFlushStopsAcceptingWrites) {
+  // Automatic compaction is held off so the only thing that can create a table
+  // is the flush this test is about -- otherwise a compaction could consume the
+  // single armed failure instead and the test would pass for the wrong reason.
+  Options options = SmallOptions();
+  options.l0_compaction_trigger = 100000;
+  auto db = OpenOrDie(options);
+  auto* impl = dynamic_cast<DBImpl*>(db.get());
+
+  // Fail the next table the flush tries to create.
+  Env::SetFailureInjectionForTesting(".sst", 1);
+
+  // Write until a write is refused. The sticky error reaches a writer at its
+  // next rotation, so this is bounded rather than immediate.
+  Status write_status;
+  for (int i = 0; i < 40000 && write_status.ok(); ++i) {
+    write_status = db->Put(WriteOptions{}, NumberedKey(i), NumberedValue(i));
+  }
+  EXPECT_FALSE(write_status.ok())
+      << "a failed flush must eventually refuse writes rather than be swallowed";
+  EXPECT_FALSE(impl->TEST_WaitForBackgroundWork().ok()) << "the error must be reported";
+
+  // And it must stay refused: a memtable that cannot be flushed will never free
+  // its log, so carrying on would accumulate state forever.
+  Env::SetFailureInjectionForTesting("", 0);
+  EXPECT_FALSE(db->Put(WriteOptions{}, "after-failure", "v").ok())
+      << "writes must stay refused after a flush failure";
+}
+
+TEST_F(FailureInjectionTest, AFailedCompactionStopsAcceptingWrites) {
+  // Automatic compaction is held off for a reason that cost a CI failure to
+  // learn: with it on, the background thread may already have drained L0 by the
+  // time the failure is armed, leaving the requested compaction with nothing to
+  // do -- so it succeeds, and the test fails for a reason unrelated to what it
+  // is testing. Holding it off guarantees there is work to fail.
+  Options options = SmallOptions();
+  options.l0_compaction_trigger = 100000;
+  auto db = OpenOrDie(options);
+  auto* impl = dynamic_cast<DBImpl*>(db.get());
+
+  for (int i = 0; i < 4000; ++i) {
+    ASSERT_TRUE(db->Put(WriteOptions{}, NumberedKey(i), NumberedValue(i)).ok());
+  }
+  ASSERT_TRUE(impl->TEST_WaitForBackgroundWork().ok());
+  ASSERT_GT(impl->TEST_FileCount(0), 0U)
+      << "a compaction needs L0 files before it can be made to fail";
+
+  // Fail the compaction's output file.
+  Env::SetFailureInjectionForTesting(".sst", 1);
+  const Status compaction = impl->TEST_CompactNow();
+  EXPECT_FALSE(compaction.ok()) << "a failed compaction must be reported";
+
+  Env::SetFailureInjectionForTesting("", 0);
+  EXPECT_FALSE(db->Put(WriteOptions{}, "after-failure", "v").ok())
+      << "writes must stay refused after a compaction failure";
+}
+
+TEST_F(FailureInjectionTest, InjectionOnlyAffectsMatchingPathsAndIsBounded) {
+  // The hook itself has to be trustworthy, or the two tests above prove nothing.
+  Env::SetFailureInjectionForTesting("no-such-file", 1);
+  auto db = OpenOrDie(SmallOptions());
+  EXPECT_TRUE(db->Put(WriteOptions{}, "unaffected", "v").ok())
+      << "a non-matching path must not be failed";
+
+  Env::SetFailureInjectionForTesting("", 0);
+  std::string value;
+  EXPECT_TRUE(db->Get(ReadOptions{}, "unaffected", &value).ok());
+}
+
 // --- P3 acceptance criteria ---
 
 // "After writing 5,000,000 random keys with 30% overwrites and 10% deletes, the

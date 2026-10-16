@@ -2,6 +2,7 @@
 
 #include <condition_variable>
 #include <cstdint>
+#include <deque>
 #include <memory>
 #include <mutex>
 #include <set>
@@ -49,6 +50,20 @@ class DBImpl final : public DB {
 
  private:
   friend class ReadSnapshotGuard;
+
+  // One waiting writer. It lives on its own thread's stack; other threads reach
+  // it through the pointer in writers_.
+  struct Writer {
+    WriteBatch* batch = nullptr;
+    bool sync = false;
+    bool done = false;  // Set by a leader that wrote this batch on our behalf.
+    Status status;
+    std::condition_variable cv;
+  };
+
+  // Merges the batches queued behind the leader into one record, and returns
+  // the last writer included. Called with the lock held.
+  Writer* BuildBatchGroup(std::string* operations, uint32_t* count, bool* sync);
 
   void BackgroundLoop();
 
@@ -99,6 +114,11 @@ class DBImpl final : public DB {
   // replayed several logs into one memtable.
   std::vector<uint64_t> mem_wal_numbers_;
   std::vector<uint64_t> imm_wal_numbers_;
+
+  // Writers in arrival order. The one at the front is the leader: it does the
+  // log append and the fsync for everyone it merges, and nobody else writes
+  // while it holds that position.
+  std::deque<Writer*> writers_;
 
   // Snapshots of reads currently in flight. A multiset because several reads
   // may share a sequence number, and each must be released independently.

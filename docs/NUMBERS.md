@@ -98,15 +98,32 @@ x86 and the skip list in P1 will depend on that distinction.
 
 ## Performance numbers
 
-Empty until P4. The table will use this shape:
+### P4 — group commit
+
+All with 8 writer threads and `kSyncEveryWrite`, so every write really reaches the disk and
+the `fsync` cost is what is being shared.
 
 | Metric | Value | Command | Machine | Date |
 | --- | --- | --- | --- | --- |
-| _(none yet)_ | | | | |
+| Durable writes/sec, 8 writers, group commit **off** | 372 | `./build/debug/tests/cpp/stratakv_tests --gtest_filter='GroupCommitTest.EightWritersAreAtLeastThreeTimesFasterWithGroupCommit'` | M1 | 2026-10-15 |
+| Durable writes/sec, 8 writers, group commit **on** | **1,765** | same test | M1 | 2026-10-15 |
+| **Group commit speed-up** | **4.74x** | same test | M1 | 2026-10-15 |
+| Same measurement, release build | 345 → 1,629, **4.72x** | `./build/release/tests/cpp/stratakv_tests --gtest_filter='GroupCommitTest.EightWriters*'` | M1 | 2026-10-15 |
+| 60 s stress, 8 writers + 8 readers, under TSan | 76,538 writes, 5,840,860 reads, **0 reports** | `./build/tsan/tests/cpp/stratakv_tests --gtest_filter='GroupCommitTest.EightWritersAndEightReadersUnderSustainedLoad'` | M1 | 2026-10-15 |
 
-Planned rows, so it is obvious what is still missing:
+The acceptance bar was 3x; the measurement is 4.74x. Two things are worth reading off these
+numbers rather than just the ratio:
 
-- P4: durable writes/sec, 8 threads, group commit on vs off, and the ratio between them
+- **The release build gives the same answer** (4.72x). That is the expected result and a
+  useful sanity check: the measurement is dominated by `fsync` latency, not by CPU, so
+  compiler optimization does not move it. A speed-up that changed a lot between build types
+  would suggest the benchmark was measuring the wrong thing.
+- **372 writes/sec across 8 writers each paying for their own sync implies about 2.7 ms per
+  `F_FULLFSYNC`** on this disk. That is a believable figure for a flush that really reaches
+  the platter, and it is the number group commit is amortizing.
+
+Still to come:
+
 - P6: sequential fill, random fill, random read (hit), random read (miss) — at 100 B and
   1 KB values, StrataKV vs SQLite at matched durability settings
 - P6: write amplification (bytes written to disk / bytes written by the user)
