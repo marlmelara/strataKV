@@ -906,6 +906,37 @@ was a proxy for it that happened to correlate on my hardware. The spec asks for 
 there -- the assertion simply no longer pretends to be reproducible on hardware that cannot
 reproduce it.
 
+**And a fourth, the worst of the session: I broke the Linux build and pushed it.**
+`src/env.cc` used `std::atomic` without including `<atomic>`. It compiled cleanly on macOS,
+because libc++ happens to pull `<atomic>` in through another header; GCC's libstdc++ does
+not, so **every Linux job failed to build** -- five C++ jobs and two Python jobs -- in about
+twenty seconds each, while every macOS job passed. All 228 local tests passed throughout.
+
+Two separate failures of mine produced it:
+
+1. The patch that was supposed to add the include targeted the text
+   `"#include <cerrno>\n#include <mutex>"`, which is not what the file contains -- there are
+   three other includes between them. `str.replace` does nothing when the pattern is absent
+   and reports nothing, so the include was silently never added. Every patch of this kind now
+   asserts that it matched.
+2. Relying on one standard library's transitive includes, which is relying on luck.
+
+An audit then found **twelve more** latent cases, all masked the same way: `std::array` in
+`version.cc`, `std::unique_ptr` in `wal_reader.cc`, `size_t` without `<cstddef>` in seven
+files. Any of them could have broken a future build on a different compiler or library
+version, for reasons that would have looked unrelated to whatever change happened to expose
+them.
+
+[tools/check_includes.py](../tools/check_includes.py) now checks all 42 source files and runs
+in the CI lint job, so the class of bug cannot reach a push again. That is the real fix --
+the thirteen individual includes are just today's instances.
+
+This is the second time this session that a missing definition or include passed the entire
+C++ suite and was caught only by a different toolchain. The pattern is worth naming: **a
+local green run says the code works with one compiler and one standard library.** It says
+nothing about portability, and portability is not a nice-to-have when the CI matrix is part
+of the acceptance criteria.
+
 **A tooling note.** My sweep command reported asan as having failures when it had none: the
 grep that extracts failing test names also matched ctest's list of *skipped* tests. Two tests
 are deliberately skipped under the sanitizers, so a clean run looked dirty. The pattern now

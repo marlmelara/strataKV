@@ -1,6 +1,7 @@
 #include "sstable_reader.h"
 
 #include <algorithm>
+#include <cstddef>
 #include <cstdint>
 #include <memory>
 #include <string>

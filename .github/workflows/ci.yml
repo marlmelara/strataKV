@@ -116,6 +116,13 @@ jobs:
       - name: ruff
         run: ruff check python tests/py tools && ruff format --check python tests/py tools
 
+      # Catches a file that compiles only because some other header pulled in
+      # what it uses. That is luck, not portability: it broke every Linux job
+      # once while every macOS job passed, because libc++ provides <atomic>
+      # transitively and libstdc++ does not.
+      - name: Include check
+        run: python3 tools/check_includes.py
+
       # clang-tidy needs compile_commands.json, so the project is configured
       # first. The script handles the one real platform difference (macOS needs
       # an explicit SDK path) so that local and CI runs mean the same thing.

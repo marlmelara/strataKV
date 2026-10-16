@@ -1,7 +1,9 @@
 #include "wal_reader.h"
 
 #include <array>
+#include <cstddef>
 #include <cstdint>
+#include <memory>
 #include <string>
 #include <string_view>
 #include <vector>
