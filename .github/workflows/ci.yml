@@ -78,6 +78,13 @@ jobs:
       - name: Acceptance check
         run: python -c "import stratakv; print(stratakv.version())"
 
+      # Runs the README's own example. It is the first code anyone pastes, and
+      # it was wrong until this check was written -- write_batch takes
+      # (key, value) pairs, not ("put", key, value) triples, so the snippet
+      # raised ValueError. Prose is not executed, so nothing else caught it.
+      - name: README example
+        run: python tools/check_readme_example.py
+
       - name: Pytest
         run: pytest
 
