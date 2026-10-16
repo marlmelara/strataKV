@@ -88,6 +88,22 @@ jobs:
       - name: Crash fuzzer
         run: python tests/py/crash_fuzz.py --iterations 50
 
+      # A tiny smoke run, not a measurement. CI runners are shared and noisy,
+      # so any timing taken here would be meaningless -- and bench.py would
+      # refuse to run on a loaded one anyway. The point is only that the
+      # benchmark and the plotting still work, because the README promises a
+      # fresh clone can reproduce them and nothing else would catch that
+      # breaking.
+      - name: Benchmark smoke run
+        run: |
+          python -m pip install -r requirements-bench.txt
+          python bench/bench.py --allow-busy-machine \
+            --operations 300 --sync-operations 20 \
+            --value-sizes 100 --write-amp-keys 2000 \
+            --output "$RUNNER_TEMP/smoke.json"
+          python bench/plot.py --results "$RUNNER_TEMP/smoke.json" \
+            --output-dir "$RUNNER_TEMP/plots"
+
   lint:
     name: Format and lint
     runs-on: ubuntu-latest

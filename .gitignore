@@ -27,9 +27,18 @@ venv/
 .ruff_cache/
 *.so.dSYM/
 
-# Benchmark + test scratch
-bench/results/*.png
-bench/results/*.json
+# Benchmark + test scratch.
+#
+# The canonical recorded run and its charts ARE committed: the README quotes
+# numbers from them, and the project's rule is that every published number
+# traces to a recorded file with the command that produced it. Ignoring them
+# would leave that record only on the machine that happened to run it.
+bench/results/*
+!bench/results/results.json
+!bench/results/writes_durable.png
+!bench/results/writes_buffered.png
+!bench/results/reads.png
+!bench/results/write_amplification.png
 *.sst
 *.log
 MANIFEST-*
