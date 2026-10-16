@@ -44,7 +44,8 @@ Status ReadExactly(const RandomAccessFile& file, uint64_t offset, size_t length,
 // several tables at once.
 class TableIterator final : public Iterator {
  public:
-  explicit TableIterator(const SSTableReader* reader) : reader_(reader) {}
+  TableIterator(const SSTableReader* reader, bool verify_checksums)
+      : reader_(reader), verify_checksums_(verify_checksums) {}
 
   bool Valid() const override { return valid_; }
 
@@ -74,7 +75,8 @@ class TableIterator final : public Iterator {
   // and avoids a sharp edge.
   void LoadBlock() {
     while (block_index_ < reader_->index_.size()) {
-      if (auto s = reader_->ReadBlock(reader_->index_[block_index_], &block_); !s.ok()) {
+      if (auto s = reader_->ReadBlock(reader_->index_[block_index_], verify_checksums_, &block_);
+          !s.ok()) {
         status_ = s;
         valid_ = false;
         return;
@@ -112,11 +114,12 @@ class TableIterator final : public Iterator {
   std::string_view value_;
   size_t block_index_ = 0;
   bool valid_ = false;
+  bool verify_checksums_ = true;
   Status status_;
 };
 
-std::unique_ptr<Iterator> SSTableReader::NewIterator() const {
-  return std::make_unique<TableIterator>(this);
+std::unique_ptr<Iterator> SSTableReader::NewIterator(bool verify_checksums) const {
+  return std::make_unique<TableIterator>(this, verify_checksums);
 }
 
 SSTableReader::SSTableReader(std::unique_ptr<RandomAccessFile> file, std::string path,
@@ -195,7 +198,11 @@ Status SSTableReader::Open(Env& env, const std::string& path, std::unique_ptr<SS
     entry.size = DecodeFixed32(entry_bytes + 8);
     cursor.remove_prefix(12);
 
-    if (entry.offset > metadata_limit || entry.size > metadata_limit - entry.offset) {
+    // The block occupies size + kBlockTrailerSize bytes on disk. Subtracting
+    // from the limit rather than adding to the offset, so a hostile offset
+    // cannot overflow past the check.
+    const uint64_t footprint = static_cast<uint64_t>(entry.size) + kBlockTrailerSize;
+    if (entry.offset > metadata_limit || footprint > metadata_limit - entry.offset) {
       return Status::Corruption(path, "index entry points outside the data region");
     }
     index.push_back(std::move(entry));
@@ -205,12 +212,32 @@ Status SSTableReader::Open(Env& env, const std::string& path, std::unique_ptr<SS
   return Status::OK();
 }
 
-Status SSTableReader::ReadBlock(const IndexEntry& entry, std::string* block) const {
-  return ReadExactly(*file_, entry.offset, entry.size, path_, block);
+Status SSTableReader::ReadBlock(const IndexEntry& entry, bool verify_checksums,
+                                std::string* block) const {
+  // One read covers the entries and the checksum that follows them.
+  std::string raw;
+  if (auto s = ReadExactly(*file_, entry.offset, entry.size + kBlockTrailerSize, path_, &raw);
+      !s.ok()) {
+    return s;
+  }
+
+  const std::string_view contents(raw.data(), entry.size);
+  if (verify_checksums) {
+    const uint32_t stored =
+        DecodeFixed32(reinterpret_cast<const uint8_t*>(raw.data()) + entry.size);
+    if (crc32c::Value(contents) != stored) {
+      // The bytes arrived and are wrong, which is a different thing from not
+      // arriving -- and the whole reason this checksum exists, because without
+      // it this value would be handed back to the caller as if it were real.
+      return Status::Corruption(path_, "data block checksum mismatch");
+    }
+  }
+  block->assign(contents);
+  return Status::OK();
 }
 
 Status SSTableReader::Get(std::string_view lookup_key, std::string_view user_key,
-                          std::string* value, bool* found) const {
+                          std::string* value, bool* found, bool verify_checksums) const {
   *found = false;
 
   // For most absent keys this returns without touching the disk at all, which
@@ -226,7 +253,9 @@ Status SSTableReader::Get(std::string_view lookup_key, std::string_view user_key
   if (block == index_.end()) return Status::OK();  // Larger than everything here.
 
   std::string contents;
-  if (auto s = ReadBlock(*block, &contents); !s.ok()) return s;  // The one disk read.
+  if (auto s = ReadBlock(*block, verify_checksums, &contents); !s.ok()) {
+    return s;  // The one disk read.
+  }
 
   std::string_view cursor = contents;
   while (!cursor.empty()) {

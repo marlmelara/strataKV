@@ -99,7 +99,7 @@ class Version {
   // key. `*found` separates "no file here holds it" from "a tombstone says it
   // is gone".
   Status Get(std::string_view lookup_key, std::string_view user_key, std::string* value,
-             bool* found) const;
+             bool* found, bool verify_checksums = true) const;
 
   // Total bytes of all files, for the space-amplification check.
   uint64_t TotalFileBytes() const;

@@ -169,12 +169,12 @@ Status VersionEdit::DecodeFrom(std::string_view source) {
 // --- Version ---
 
 Status Version::Get(std::string_view lookup_key, std::string_view user_key, std::string* value,
-                    bool* found) const {
+                    bool* found, bool verify_checksums) const {
   *found = false;
 
   // L0 files overlap, so every one of them has to be consulted, newest first.
   for (const LevelFile& file : files_[0]) {
-    Status status = file.reader->Get(lookup_key, user_key, value, found);
+    Status status = file.reader->Get(lookup_key, user_key, value, found, verify_checksums);
     if (*found) return status;
     if (!status.ok()) return status;
   }
@@ -192,7 +192,7 @@ Status Version::Get(std::string_view lookup_key, std::string_view user_key, std:
   if (comparator_.Compare(lookup_key, candidate->meta.smallest) < 0) {
     if (ExtractUserKey(candidate->meta.smallest) != user_key) return Status::OK();
   }
-  return candidate->reader->Get(lookup_key, user_key, value, found);
+  return candidate->reader->Get(lookup_key, user_key, value, found, verify_checksums);
 }
 
 uint64_t Version::TotalFileBytes() const {

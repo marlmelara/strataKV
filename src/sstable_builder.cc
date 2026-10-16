@@ -70,9 +70,20 @@ Status SSTableBuilder::FlushDataBlock() {
   if (block_.empty()) return Status::OK();
 
   const uint64_t block_offset = offset_;
+  const auto block_size = static_cast<uint32_t>(block_.size());
   if (auto s = AppendRaw(block_); !s.ok()) return s;
 
-  index_.push_back(IndexEntry{block_last_key_, block_offset, static_cast<uint32_t>(block_.size())});
+  // The checksum covers exactly the entry bytes, so a reader can verify a block
+  // from the block alone without needing anything else about the file. This is
+  // what makes corruption *inside* a block detectable rather than silently
+  // returned to the caller as a value.
+  std::string trailer;
+  PutFixed32(&trailer, crc32c::Value(std::string_view(block_)));
+  if (auto s = AppendRaw(trailer); !s.ok()) return s;
+
+  // The recorded size excludes the checksum: it is the number of entry bytes,
+  // and the trailer is part of the framing.
+  index_.push_back(IndexEntry{block_last_key_, block_offset, block_size});
   block_.clear();
   block_last_key_.clear();
   return Status::OK();

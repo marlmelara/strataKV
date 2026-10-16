@@ -24,14 +24,25 @@ namespace stratakv {
 //   [footer, 48 bytes]                              filter (offset,size) | index (offset,size)
 //                                                   | magic | crc32c
 //
-// Data blocks hold entries as `klen | key | vlen | value` with varint lengths.
-// Index entries are `last_key | offset(8) | size(4)`, also length-prefixed.
+// Data blocks hold entries as `klen | key | vlen | value` with varint lengths,
+// followed by a 4-byte CRC32C of those entry bytes. Index entries are
+// `last_key | offset(8) | size(4)`, also length-prefixed, where the size is the
+// entry bytes only -- the checksum is part of the block's framing, so a reader
+// asks for `size + kBlockTrailerSize` bytes and verifies what it got.
+//
+// Without that per-block checksum the footer would prove only that the table was
+// written *completely*, not that its contents are still intact: a bit flipped
+// inside a data block by disk corruption would be handed back to the caller as a
+// value, silently. It costs 4 bytes per ~4 KB block, about 0.1%.
 //
 // The footer is last and fixed-size so a reader can find everything else with
 // one read from the end of the file. Its checksum and magic number are what
 // make a half-written table detectable: a flush interrupted before the footer
 // lands produces a file that simply does not validate.
 inline constexpr size_t kFooterSize = 48;
+
+// Bytes of checksum after every data block.
+inline constexpr size_t kBlockTrailerSize = 4;
 
 // "StrataKV" in ASCII, little-endian. Guards against reading a file that is
 // not an SSTable at all.

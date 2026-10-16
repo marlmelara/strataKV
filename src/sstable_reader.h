@@ -37,12 +37,16 @@ class SSTableReader {
   // files" from "this table says it is deleted, stop searching". Both would
   // otherwise look like "no value", and conflating them makes deleted keys come
   // back to life.
+  //
+  // `verify_checksums` checks the data block's CRC32C before trusting it. On by
+  // default: silently returning a corrupted value is the worst outcome
+  // available, so it has to be opted out of rather than into.
   Status Get(std::string_view lookup_key, std::string_view user_key, std::string* value,
-             bool* found) const;
+             bool* found, bool verify_checksums = true) const;
 
   // Walks every entry in the table in sorted order. Used by compaction, which
   // reads whole files rather than looking keys up one at a time.
-  std::unique_ptr<Iterator> NewIterator() const;
+  std::unique_ptr<Iterator> NewIterator(bool verify_checksums = true) const;
 
   size_t BlockCount() const { return index_.size(); }
   const BloomFilter& filter() const { return filter_; }
@@ -61,7 +65,7 @@ class SSTableReader {
   SSTableReader(std::unique_ptr<RandomAccessFile> file, std::string path, BloomFilter filter,
                 std::vector<IndexEntry> index);
 
-  Status ReadBlock(const IndexEntry& entry, std::string* block) const;
+  Status ReadBlock(const IndexEntry& entry, bool verify_checksums, std::string* block) const;
 
   std::unique_ptr<RandomAccessFile> file_;
   std::string path_;

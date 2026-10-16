@@ -31,11 +31,11 @@ RocksDB — you `put`, `get`, and `delete` keys, every acknowledged write surviv
 | WAL | [src/wal_writer.h](src/wal_writer.h), [src/wal_reader.h](src/wal_reader.h) | Checksummed records; a torn tail is truncated, mid-file damage is reported as `Corruption` |
 | Memtable | [src/memtable.h](src/memtable.h), [src/skiplist.h](src/skiplist.h) | Skip list with one writer and any number of lock-free readers |
 | Crash points | [src/crash_point.h](src/crash_point.h) | `STRATAKV_CRASH_AT=<name>` kills the process at a named moment in the write or flush path |
-| SSTables | [src/sstable_builder.h](src/sstable_builder.h), [src/sstable_reader.h](src/sstable_reader.h) | Sorted immutable files: data blocks, bloom filter, index, checksummed footer |
+| SSTables | [src/sstable_builder.h](src/sstable_builder.h), [src/sstable_reader.h](src/sstable_reader.h) | Sorted immutable files: data blocks each with their own CRC32C, bloom filter, index, checksummed footer |
 | Bloom filters | [src/bloom.h](src/bloom.h) | 10 bits/key, 7 probes, **measured 0.729%** false-positive rate |
 | Background flush | [src/db_impl.h](src/db_impl.h) | Memtable rotation at 4 MB; a log is deleted only once its table is durable |
 | MANIFEST + versions | [src/version.h](src/version.h) | Append-only log of version edits, atomic `CURRENT` replacement, reference-counted snapshots |
-| Compaction | [src/compaction.h](src/compaction.h) | L0→L1 k-way merge; drops shadowed versions and tombstones, **1.44×** space amplification measured |
+| Compaction | [src/compaction.h](src/compaction.h) | L0→L1 k-way merge; drops shadowed versions and tombstones, **1.445×** space amplification measured |
 | Group commit | [src/db_impl.h](src/db_impl.h) | Leader merges queued batches into one record with one shared `fsync`: **4.74×** at 8 writers, TSan-clean over a 60 s 8×8 stress |
 | Python package | [python/stratakv/\_\_init\_\_.py](python/stratakv/__init__.py) | `DB` with mapping syntax and a context manager; releases the GIL during engine calls |
 | Crash fuzzer | [tests/py/crash_fuzz.py](tests/py/crash_fuzz.py) | `SIGKILL`s a writing process at random moments and in named crash points, then demands every acknowledged write back |

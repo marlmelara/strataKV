@@ -130,27 +130,36 @@ Recovery can then notice that the log ends earlier than the recorded state impli
 report corruption instead of truncating. Until then, a damaged *middle* record is detected
 (because valid records follow it) while a damaged *last* record is not.
 
-### Data blocks have no checksum, so damage inside one is undetectable
+### Data blocks are checksummed (a deviation from the specified format)
 
 The specified SSTable format gives the footer a CRC32C and encodes data blocks as "a plain
-`klen | key | vlen | value` encoding" with no checksum of their own. The implementation
-follows that exactly.
+`klen | key | vlen | value` encoding" with no checksum of their own. **This implementation
+deviates**: every data block is followed by a 4-byte CRC32C of its entry bytes, verified on
+read.
 
-The consequence is worth stating plainly: **the footer checksum proves the table was
-written completely, not that its contents are intact.** A bit flipped inside a data block
-by disk corruption is returned to the caller as a value, with no error. Contrast the WAL,
-where every record is checksummed and damage is either caught or correctly classified as a
-torn tail.
+**Why the deviation was raised.** The footer checksum proves the table was written
+*completely*, not that its contents are *intact*. A bit flipped inside a data block by disk
+corruption was handed back to the caller as a value, with no error — while the WAL, by
+contrast, checksums every record and either catches damage or correctly classifies it as a
+torn tail. `ReadOptions::verify_checksums` also had nothing to verify, which is the clearest
+symptom that something was missing. Publishing a "crash-safe" engine with that hole open was
+the one inconsistency worth fixing before the benchmarks in P6.
 
-`ReadOptions::verify_checksums` consequently has nothing to verify at the block level,
-which is the clearest symptom that something is missing.
+**What it costs.** Four bytes per ~4 KB block. Measured on the 5,000,000-operation
+acceptance run: space amplification moved from 1.44375x to 1.4451x, an increase of 12,636
+bytes across 13.5 MB — **0.09%**. The time cost is one checksum over bytes already in cache.
+LevelDB and RocksDB both do this.
 
-**Recommended change, raised rather than made:** append a 4-byte CRC32C to each data block
-and verify it on read. The space cost is 4 bytes per ~4 KB block, about 0.1%, and the time
-cost is one checksum over bytes already in cache. LevelDB and RocksDB both do this. It has
-not been changed because the on-disk format is specified and the spec requires deviations
-to be raised first; this is the first item to settle before P6, since crash safety is the
-project's headline claim and this is the one place where damage goes unreported.
+**How it is framed on disk.** The index entry's size records the entry bytes only; the
+checksum is part of the block's framing, so a reader asks for `size + kBlockTrailerSize`
+bytes and verifies what it got. The bounds check in `SSTableReader::Open` accounts for the
+trailer, subtracting from the limit rather than adding to the offset so a hostile offset
+cannot overflow past it.
+
+`ReadOptions::verify_checksums` is now plumbed from `DB::Get` through `Version::Get` to
+`SSTableReader::Get`, so the documented option actually does something. It defaults to on:
+silently returning a corrupted value is the worst outcome available, so it has to be opted
+out of rather than into.
 
 ## Decisions made in P0 that the spec did not dictate
 

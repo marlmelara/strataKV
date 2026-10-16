@@ -394,7 +394,7 @@ Status DBImpl::Write(const WriteOptions& options, WriteBatch* batch) {
   return status;
 }
 
-Status DBImpl::Get(const ReadOptions& /*options*/, std::string_view key, std::string* value) {
+Status DBImpl::Get(const ReadOptions& options, std::string_view key, std::string* value) {
   if (value == nullptr) return Status::InvalidArgument("value", "must not be null");
 
   std::shared_ptr<MemTable> mem;
@@ -431,7 +431,7 @@ Status DBImpl::Get(const ReadOptions& /*options*/, std::string_view key, std::st
   AppendInternalKey(&lookup, key, snapshot, kValueTypeForSeek);
 
   bool found = false;
-  Status version_status = version->Get(lookup, key, value, &found);
+  Status version_status = version->Get(lookup, key, value, &found, options.verify_checksums);
   if (found) return version_status;
   if (!version_status.ok()) return version_status;
   return Status::NotFound("key");

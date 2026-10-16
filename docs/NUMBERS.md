@@ -67,7 +67,7 @@ so they are recorded the same way.
 | Result | Value | Command | Machine | Date |
 | --- | --- | --- | --- | --- |
 | 5,000,000 operations vs a reference `std::map` | matched exactly across 360,035 surviving keys | `ctest --preset debug -R MillionsOfOperationsMatchAReferenceMap` | M1 | 2026-10-15 |
-| Space amplification after compaction | **1.44x** (13,514,830 bytes on disk, 9,360,910 bytes live) | same test, prints the ratio | M1 | 2026-10-15 |
+| Space amplification after compaction | **1.445x** (13,527,466 bytes on disk, 9,360,910 bytes live) | same test, prints the ratio | M1 | 2026-10-16 |
 | 5,000,000-operation run time | 35.2 s | same test | M1 | 2026-10-15 |
 | Crash during compaction, every acknowledged write recovered | passed for `compaction_after_output` and `compaction_before_manifest` | `ctest --preset debug -R AcceptanceCompactionCrashPoints` | M1 | 2026-10-15 |
 | clang-tidy, curated checks | 0 diagnostics | `./tools/run-clang-tidy.sh build/debug` | M1 | 2026-10-15 |
@@ -75,8 +75,14 @@ so they are recorded the same way.
 
 | Flaky-test fixes, stress-verified | `ReadersAreUnaffectedByAConcurrentCompaction` 40/40 (was ~1 in 33); `NewerTablesShadowOlderOnes` + `ReadsSpanMemtableImmutableMemtableAndL0` 15/15 (was ~1 in 3) | repeated `./build/asan/tests/cpp/stratakv_tests --gtest_filter=...` | M1 | 2026-10-15 |
 
-On the 1.44x: the requirement is 1.5x, so the margin is thin and worth understanding rather
-than celebrating. The denominator counts only raw key and value bytes, while the files also
+On the 1.445x: the requirement is 1.5x, so the margin is thin and worth understanding rather
+than celebrating.
+
+It was 1.44375x before per-block checksums were added, so those cost **12,636 bytes across
+13.5 MB — 0.09%**, which is 3,159 blocks at 4 bytes each. That is the price of being able to
+detect corruption inside a data block at all, and it is the sort of trade worth stating in
+both directions: a tenth of a percent of disk for the difference between reporting damage
+and silently returning it. The denominator counts only raw key and value bytes, while the files also
 carry an 8-byte internal-key trailer per entry (about 2.9 MB over 360,035 keys), plus a bloom
 filter, an index, and a footer per file, plus any L0 files not yet compacted. Most of the
 overhead is the format itself rather than uncollected garbage, which also means more

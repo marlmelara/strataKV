@@ -1131,3 +1131,72 @@ CI runs a 50-iteration fuzz and the full Python suite on every push.
 ### Gate
 
 Suspended; see [STUDY.md](STUDY.md).
+
+---
+
+## Interlude — per-block checksums, before P6
+
+### Why this happened outside a phase
+
+Since P2 the debrief has carried an objection: the specified SSTable format gives the footer
+a checksum but leaves data blocks unprotected, so the footer proves a table was written
+*completely* and says nothing about whether its contents are *intact*. A bit flipped inside
+a data block by disk corruption was returned to the caller as a value, silently.
+`ReadOptions::verify_checksums` had nothing to verify, which is the clearest sign something
+was missing.
+
+P6 publishes benchmark numbers under the heading "crash-safe". Publishing those with that
+hole still open was the one inconsistency worth closing first, so it was done between the
+phases rather than folded into either.
+
+### What changed
+
+Every data block now carries a 4-byte CRC32C of its entry bytes, verified on read. The index
+entry's size still records the entry bytes alone -- the checksum is part of the block's
+framing -- so a reader asks for `size + kBlockTrailerSize` bytes and verifies what it got.
+`SSTableReader::Open`'s bounds check accounts for the trailer, still subtracting from the
+limit rather than adding to the offset so a hostile offset cannot overflow past it.
+
+`ReadOptions::verify_checksums` is now plumbed from `DB::Get` through `Version::Get` to
+`SSTableReader::Get`. It had been a documented option that did nothing; adding a checksum
+without wiring it would have left the documentation lying in a new way.
+
+### What it cost, measured
+
+| | Before | After |
+| --- | --- | --- |
+| Space amplification, 5,000,000-operation run | 1.44375x | **1.4451x** |
+| Bytes on disk | 13,514,830 | 13,527,466 |
+
+**12,636 bytes across 13.5 MB — 0.09%**, which is 3,159 blocks at 4 bytes each, exactly the
+tenth of a percent predicted when the objection was first raised. Still inside the 1.5x
+requirement. The time cost is one checksum over bytes already in cache.
+
+Worth stating in both directions: a tenth of a percent of disk buys the difference between
+reporting corruption and silently serving it.
+
+### Tests
+
+Four new ones, and the second is the one that matters:
+
+- `CorruptionInsideADataBlockIsDetected` -- damage a byte deep in the data region, well away
+  from the footer and index. The table still *opens*, because its metadata is intact; the
+  damage is found when the block is read. Before this change that value came back as though
+  it were real.
+- `EveryDataBlockByteIsCoveredByAChecksum` -- walk the whole data region one byte at a time,
+  damaging each in turn. The assertion is not that every byte is detected, because some bytes
+  belong to entries no lookup touches. It is the stronger and more useful one: **no damaged
+  byte ever causes a wrong value to be returned as though it were correct.**
+- `VerifyChecksumsCanBeTurnedOff` -- the option has to actually do something in both
+  positions, or it is decoration.
+- Plus the existing footer, truncation, and not-an-SSTable tests, all still passing.
+
+231 tests pass, 231 of them unchanged in behavior: this is a format change, and nothing else
+had to move to accommodate it.
+
+### What is still open
+
+The deviation itself. The spec fixes the data block encoding as "a plain
+`klen | key | vlen | value` encoding", and this no longer matches it byte for byte. The
+objection was raised in the P2 debrief, carried unresolved through P3, P4 and P5, and acted
+on only after the owner agreed. [DESIGN.md](DESIGN.md) records the format as implemented.

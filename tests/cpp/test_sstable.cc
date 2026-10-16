@@ -298,6 +298,131 @@ TEST_F(SSTableTest, CorruptFooterIsRejected) {
   }
 }
 
+// The hole this closes. Before per-block checksums, the footer proved only that
+// the table was written completely: a bit flipped inside a data block was
+// handed back to the caller as a value, silently. Now it is reported.
+TEST_F(SSTableTest, CorruptionInsideADataBlockIsDetected) {
+  Options options;
+  options.block_bytes = 256;
+
+  std::vector<std::pair<std::string, std::string>> entries;
+  for (int i = 0; i < 400; ++i) {
+    entries.emplace_back(Internal(testing::NumberedKey(i), static_cast<uint64_t>(i) + 1),
+                         testing::NumberedValue(i));
+  }
+  Build(entries, options);
+
+  std::string contents;
+  ASSERT_TRUE(env_.ReadFileToString(Path(), &contents).ok());
+
+  // Damage a byte well inside the data region, nowhere near the footer or the
+  // index -- somewhere only a per-block checksum can catch.
+  const size_t target = 64;
+  ASSERT_LT(target, contents.size() / 2);
+  std::string damaged = contents;
+  damaged[target] = static_cast<char>(damaged[target] ^ 0xFF);
+  ASSERT_TRUE(env_.WriteFile(Path(), damaged).ok());
+
+  // The table still opens: its footer and index are intact. The damage is only
+  // discovered when the block is actually read.
+  auto reader = OpenOrDie();
+
+  int corruption_reported = 0;
+  int values_returned = 0;
+  for (int i = 0; i < 400; ++i) {
+    std::string value;
+    bool found = false;
+    const Status status =
+        reader->Get(Lookup(testing::NumberedKey(i)), testing::NumberedKey(i), &value, &found);
+    if (status.IsCorruption()) {
+      ++corruption_reported;
+    } else if (found) {
+      ++values_returned;
+      // Anything still returned must be correct.
+      EXPECT_EQ(value, testing::NumberedValue(i)) << i;
+    }
+  }
+
+  EXPECT_GT(corruption_reported, 0)
+      << "damage inside a data block was not reported: it was returned as a value";
+  EXPECT_GT(values_returned, 0) << "undamaged blocks should still be readable";
+}
+
+TEST_F(SSTableTest, EveryDataBlockByteIsCoveredByAChecksum) {
+  Options options;
+  options.block_bytes = 128;
+
+  std::vector<std::pair<std::string, std::string>> entries;
+  for (int i = 0; i < 40; ++i) {
+    entries.emplace_back(Internal(testing::NumberedKey(i), static_cast<uint64_t>(i) + 1), "v");
+  }
+  Build(entries, options);
+
+  std::string original;
+  ASSERT_TRUE(env_.ReadFileToString(Path(), &original).ok());
+
+  // Walk the whole data region a byte at a time. Every single byte, when
+  // damaged, must either be reported or leave every returned value correct --
+  // what must never happen is a wrong value returned as if it were right.
+  auto reader_for_extent = OpenOrDie();
+  const size_t data_region = original.size() / 2;  // Conservatively inside the data blocks.
+
+  int detected = 0;
+  for (size_t index = 0; index < data_region; ++index) {
+    std::string damaged = original;
+    damaged[index] = static_cast<char>(damaged[index] ^ 0xFF);
+    ASSERT_TRUE(env_.WriteFile(Path(), damaged).ok());
+
+    std::unique_ptr<SSTableReader> reader;
+    if (!SSTableReader::Open(env_, Path(), &reader).ok()) {
+      ++detected;  // Caught at open: also fine.
+      continue;
+    }
+    bool any_corruption = false;
+    for (int i = 0; i < 40; ++i) {
+      std::string value;
+      bool found = false;
+      const Status status =
+          reader->Get(Lookup(testing::NumberedKey(i)), testing::NumberedKey(i), &value, &found);
+      if (status.IsCorruption()) {
+        any_corruption = true;
+      } else if (found) {
+        ASSERT_EQ(value, "v") << "byte " << index << " damaged, key " << i
+                              << " returned a wrong value as though it were correct";
+      }
+    }
+    if (any_corruption) ++detected;
+  }
+  EXPECT_GT(detected, 0) << "no damage anywhere in the data region was detected";
+}
+
+// The option exists so a caller can trade safety for speed knowingly. If it did
+// nothing, it would be a lie in the documentation.
+TEST_F(SSTableTest, VerifyChecksumsCanBeTurnedOff) {
+  Build({{Internal("apple", 1), "red"}});
+
+  std::string contents;
+  ASSERT_TRUE(env_.ReadFileToString(Path(), &contents).ok());
+  std::string damaged = contents;
+  damaged[20] = static_cast<char>(damaged[20] ^ 0xFF);
+  ASSERT_TRUE(env_.WriteFile(Path(), damaged).ok());
+
+  auto reader = OpenOrDie();
+  std::string value;
+  bool found = false;
+
+  // Verification on: the damage is reported.
+  EXPECT_TRUE(reader->Get(Lookup("apple"), "apple", &value, &found, /*verify_checksums=*/true)
+                  .IsCorruption());
+
+  // Verification off: no checksum is computed, so nothing is reported. The
+  // value may be anything; the point is only that the option is honored.
+  const Status unverified =
+      reader->Get(Lookup("apple"), "apple", &value, &found, /*verify_checksums=*/false);
+  EXPECT_FALSE(unverified.IsCorruption())
+      << "verify_checksums=false must skip verification, not merely be ignored";
+}
+
 TEST_F(SSTableTest, AFileThatIsNotAnSSTableIsRejected) {
   ASSERT_TRUE(env_.WriteFile(Path(), std::string(200, 'x')).ok());
   std::unique_ptr<SSTableReader> reader;
