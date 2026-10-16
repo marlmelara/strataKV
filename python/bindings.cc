@@ -24,6 +24,8 @@
 #include "stratakv/version.h"
 #include "stratakv/write_batch.h"
 
+#include "env.h"
+
 namespace py = pybind11;
 
 namespace {
@@ -205,6 +207,21 @@ PYBIND11_MODULE(_stratakv, m) {
   m.def(
       "version", []() { return std::string(stratakv::VersionString()); },
       "Version of the compiled engine, taken from the CMake project version.");
+
+  // Instrumentation for the benchmarks. Named plainly rather than hidden,
+  // because a number in the README has to be reproducible by whoever reads it.
+  m.def(
+      "bytes_written", []() { return stratakv::Env::BytesWrittenForTesting(); },
+      "Total bytes this process has written to disk, across all files.");
+  m.def(
+      "reset_bytes_written", []() { stratakv::Env::ResetBytesWrittenForTesting(); },
+      "Zero the byte counter before a measurement.");
+  m.def(
+      "sync_count", []() { return stratakv::Env::SyncCountForTesting(); },
+      "Number of durable syncs this process has performed.");
+  m.def(
+      "reset_sync_count", []() { stratakv::Env::ResetSyncCountForTesting(); },
+      "Zero the sync counter before a measurement.");
 
   py::class_<PythonDB>(m, "DB")
       .def_static("open", &PythonDB::Open, py::arg("path"), py::arg("create_if_missing") = true,

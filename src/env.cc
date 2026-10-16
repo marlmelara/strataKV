@@ -32,6 +32,13 @@ Status PosixError(const std::string& path, int err) {
   return Status::IOError(path, std::strerror(err));
 }
 
+// Every byte the engine writes passes through WriteFully, so counting here
+// gives the numerator of write amplification.
+std::atomic<uint64_t>& BytesWrittenCounter() {
+  static std::atomic<uint64_t> counter{0};
+  return counter;
+}
+
 // Test-only fault injection state. Atomic so a test may arm it from one thread
 // while the background thread reads it from another.
 std::mutex& InjectionMutex() {
@@ -90,6 +97,8 @@ Status WriteFully(int fd, const uint8_t* data, size_t n, const std::string& path
     }
     written += static_cast<size_t>(result);
   }
+  // Counted here, the single point every byte the engine writes passes through.
+  BytesWrittenCounter().fetch_add(n, std::memory_order_relaxed);
   return Status::OK();
 }
 
@@ -394,6 +403,14 @@ class PosixEnv final : public Env {
 };
 
 }  // namespace
+
+uint64_t Env::BytesWrittenForTesting() {
+  return BytesWrittenCounter().load(std::memory_order_relaxed);
+}
+
+void Env::ResetBytesWrittenForTesting() {
+  BytesWrittenCounter().store(0, std::memory_order_relaxed);
+}
 
 uint64_t Env::SyncCountForTesting() { return SyncCounter().load(std::memory_order_relaxed); }
 

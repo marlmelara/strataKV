@@ -108,6 +108,16 @@ class Env {
   // flush, it saves almost nothing.
   static void SetSyncFailureInjectionForTesting(std::string_view path_substring, int count);
 
+  // Total bytes handed to the operating system by this process.
+  //
+  // Write amplification is bytes written to disk divided by bytes written by
+  // the user, and the two differ by a lot: the same data goes to the log, then
+  // to an L0 table, then gets rewritten by every compaction that touches it.
+  // Final disk usage does not show that, because compaction deletes what it
+  // replaced -- only counting at the moment of writing does.
+  static uint64_t BytesWrittenForTesting();
+  static void ResetBytesWrittenForTesting();
+
   static uint64_t SyncCountForTesting();
   static void ResetSyncCountForTesting();
 

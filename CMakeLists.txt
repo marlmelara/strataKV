@@ -91,5 +91,8 @@ if(STRATAKV_BUILD_PYTHON)
   find_package(pybind11 CONFIG REQUIRED)
   pybind11_add_module(_stratakv python/bindings.cc)
   target_link_libraries(_stratakv PRIVATE stratakv)
+  # The bindings expose the benchmark instrumentation on Env, which is an
+  # engine internal rather than part of the public include/stratakv API.
+  target_include_directories(_stratakv PRIVATE ${CMAKE_CURRENT_SOURCE_DIR}/src)
   install(TARGETS _stratakv DESTINATION stratakv)
 endif()
