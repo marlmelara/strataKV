@@ -81,6 +81,13 @@ jobs:
       - name: Pytest
         run: pytest
 
+      # The crash fuzzer on every push. 50 iterations is the acceptance
+      # criterion for CI; the 1,000-iteration run is recorded in
+      # docs/NUMBERS.md. Each iteration SIGKILLs a writing child process and
+      # then demands every acknowledged write back.
+      - name: Crash fuzzer
+        run: python tests/py/crash_fuzz.py --iterations 50
+
   lint:
     name: Format and lint
     runs-on: ubuntu-latest

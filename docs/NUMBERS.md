@@ -139,6 +139,27 @@ mechanism stated as a count of operations rather than a span of time, so it hold
 machine — which is the right shape for an assertion, and the recorded 4.74x stays the
 measured claim on a named machine as the spec requires.
 
+### P5 — crash fuzzer and property tests
+
+| Metric | Value | Command | Machine | Date |
+| --- | --- | --- | --- | --- |
+| Crash fuzzer, 1,000 iterations | **43,088 acknowledged writes verified, 0 lost, 0 corruption errors** | `python tests/py/crash_fuzz.py --iterations 1000` | M1 | 2026-10-16 |
+| — killed by raw `SIGKILL` | 501 of 1,000 | same run | M1 | 2026-10-16 |
+| — killed by an armed crash point | 499 of 1,000, all 7 points exercised 124–160 times each | same run | M1 | 2026-10-16 |
+| — wall clock | 459 s | same run | M1 | 2026-10-16 |
+| Python unit tests | 42 passed | `pytest tests/py/test_basic.py` | M1 | 2026-10-16 |
+| Hypothesis, default configuration | 300 roomy + 15 flush-heavy sequences passed | `pytest tests/py/test_stateful.py` | M1 | 2026-10-16 |
+| Hypothesis, 10,000 sequences | _run in flight; recorded in the follow-up commit_ | `STRATAKV_HYPOTHESIS_EXAMPLES=10000 pytest tests/py/test_stateful.py` | M1 | — |
+
+This is the row the whole project exists to produce. "Acknowledged" means `put` returned:
+the child process prints each key only after that, so the set the parent reads is exactly
+what the engine promised, and every one of those 43,088 promises was still there after the
+process was killed without warning.
+
+Writes that were *in flight* at the kill are deliberately not checked. They may or may not
+have survived and both are correct, because the caller was never told they succeeded.
+Checking them would make the fuzzer fail on legal behavior.
+
 Still to come:
 
 - P6: sequential fill, random fill, random read (hit), random read (miss) — at 100 B and

@@ -5,15 +5,16 @@ C++20 engine, Python package, crash fuzzer, and benchmarks. In one sentence: a t
 RocksDB — you `put`, `get`, and `delete` keys, every acknowledged write survives
 `kill -9`, and reads stay fast as data grows past memory.
 
-> **Status: P4 of 7 complete.** Every acknowledged write reaches a checksummed
+> **Status: P5 of 7 complete.** Every acknowledged write reaches a checksummed
 > write-ahead log and is `fsync`ed before `Put` returns; full memtables are flushed to
 > immutable SSTables on a background thread, and reads span memtable, immutable memtable,
 > and L0 with bloom filters sparing most lookups any disk read. Compaction now merges L0
 > into L1, reclaiming space from overwrites and deletes, with a MANIFEST recording the file
 > set and reference-counted version snapshots so files are never deleted under a running
 > read. Leader-follower group commit shares one `fsync` across queued writers, measured
-> **4.7× faster** with 8 concurrent writers. The Python `DB` class lands in P5 and the
-> SQLite benchmarks in P6 — every number here comes from
+> **4.7× faster** with 8 concurrent writers. The Python package is complete, and the crash
+> fuzzer has verified **43,088 acknowledged writes across 1,000 SIGKILL crashes with zero
+> lost**. SQLite benchmarks land in P6 — every number here comes from
 > [docs/NUMBERS.md](docs/NUMBERS.md).
 
 ## What works today
@@ -36,6 +37,8 @@ RocksDB — you `put`, `get`, and `delete` keys, every acknowledged write surviv
 | MANIFEST + versions | [src/version.h](src/version.h) | Append-only log of version edits, atomic `CURRENT` replacement, reference-counted snapshots |
 | Compaction | [src/compaction.h](src/compaction.h) | L0→L1 k-way merge; drops shadowed versions and tombstones, **1.44×** space amplification measured |
 | Group commit | [src/db_impl.h](src/db_impl.h) | Leader merges queued batches into one record with one shared `fsync`: **4.74×** at 8 writers, TSan-clean over a 60 s 8×8 stress |
+| Python package | [python/stratakv/\_\_init\_\_.py](python/stratakv/__init__.py) | `DB` with mapping syntax and a context manager; releases the GIL during engine calls |
+| Crash fuzzer | [tests/py/crash_fuzz.py](tests/py/crash_fuzz.py) | `SIGKILL`s a writing process at random moments and in named crash points, then demands every acknowledged write back |
 
 ## Building
 

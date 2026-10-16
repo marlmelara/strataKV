@@ -79,3 +79,14 @@ Each phase appends the terms it introduced.
 | Leader / follower | The writer at the front of the queue does the log append and the `fsync` for everyone it merges; the others sleep and collect its result | `DBImpl::Write` |
 | Thundering herd | Waking many threads for an event only one can act on, so nearly all immediately sleep again. Avoided by giving each writer its own condition variable | `Writer::cv` |
 | Throughput | Operations completed per second. The number group commit exists to raise, as opposed to latency, which it slightly raises for the leader | [NUMBERS.md](NUMBERS.md) |
+
+## P5
+
+| Term | Plain-English meaning | Where it shows up |
+| --- | --- | --- |
+| Acknowledged write | One whose `put` returned. Sharpened in P5 from a definition into a mechanism: the fuzzer child prints a key only after that return, so the printed set *is* the set of promises | `tests/py/fuzz_writer.py` |
+| GIL (global interpreter lock) | CPython's lock letting only one thread run Python at a time. C++ code releases it during disk work so other Python threads keep running | `py::gil_scoped_release` in `python/bindings.cc` |
+| Model-based testing | Running the real system and a trivially correct reference side by side over random operations, asserting they agree. The reference here is a `dict` | `tests/py/test_stateful.py` |
+| SIGKILL | A signal that cannot be caught or handled: no cleanup, no destructors, no buffer flushing. The closest thing to pulling the power cord | `child.kill()` in `crash_fuzz.py` |
+| Shrinking | After a random failure, Hypothesis searching for the shortest sequence that still fails. What makes a 300-step failure debuggable | Hypothesis, automatically |
+| Strategy | A Hypothesis recipe for generating random values, such as `st.binary(max_size=8)` | `tests/py/test_stateful.py` |

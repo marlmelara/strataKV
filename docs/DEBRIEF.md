@@ -980,3 +980,149 @@ which is the opposite of the usual danger but just as misleading.
 ### Gate
 
 Suspended; see [STUDY.md](STUDY.md).
+
+---
+
+## P5 — Python package, property tests, and the crash fuzzer
+
+### What was built
+
+The engine became usable from Python, and then got tested far harder than any hand-written
+suite could manage. The binding layer exposes `get`, `put`, `delete`, `write_batch` and
+`close`, plus mapping syntax and a context manager; it releases the GIL around every engine
+call and turns each `Status` into the exception a Python caller would expect. Hypothesis
+then drives the engine and a plain `dict` through thousands of random operation sequences,
+checking after every step that they agree, with reopens mixed in so recovery runs constantly.
+And the crash fuzzer `SIGKILL`s a writing process at random moments -- sometimes inside a
+named crash point -- reopens the database, and demands every acknowledged write back.
+
+### The files that matter
+
+| File | What it does |
+| --- | --- |
+| [python/bindings.cc](../python/bindings.cc) | The GIL handling and the Status-to-exception mapping. Every key is copied into C++ memory *before* the GIL is released, because Python objects may not be touched without it |
+| [tests/py/crash_fuzz.py](../tests/py/crash_fuzz.py) | The project's central claim, tested the only way it can be: kill the process and demand the promises back |
+| [tests/py/fuzz_writer.py](../tests/py/fuzz_writer.py) | Defines "acknowledged" operationally -- it prints a key only after the write returned, and flushes immediately |
+| [tests/py/test_stateful.py](../tests/py/test_stateful.py) | The engine against a dict, over random sequences, with reopens |
+| [python/stratakv/\_\_init\_\_.py](../python/stratakv/__init__.py) | The typed wrapper: mapping syntax, context manager, and the KeyError-vs-None distinction |
+
+### Decisions the spec did not dictate
+
+| Decision | Chose | Alternative considered | Why the alternative lost |
+| --- | --- | --- | --- |
+| `MutableMapping` | Implement the mapping dunders but do **not** inherit from the ABC | Inherit, as the spec's snippet shows, and raise `NotImplementedError` from `__iter__`/`__len__` | The ABC requires `__iter__` and `__len__`, which need range scans this engine does not have. Inheriting would make `dict(db)` and `len(db)` type-check and then fail at runtime -- advertising an interface it cannot honor. When range scans land, both can be added and the ABC claimed honestly. See the objection below |
+| `delete()` versus `del db[k]` | `delete()` is idempotent; `del db[k]` raises `KeyError` | Make both behave the same | They answer to different contracts. The engine's delete writes a tombstone and deleting nothing is meaningless, not erroneous. But `del` on a mapping raises `KeyError`, and a Python caller will expect that. Keeping both costs one documented sentence and a read before the delete in the dunder only |
+| I/O failures | `OSError` | A dedicated `StrataKVIOError` | `OSError` is what a Python caller already catches for a failed file operation. A new type would only make it easier to miss |
+| Corruption | A dedicated `CorruptionError`, under a `StrataKVError` base | Fold into `OSError` | Corruption means the bytes arrived and were wrong; an I/O error means they never arrived. That difference decides what a caller does next, so it should not be collapsed |
+| `str` keys | Rejected with `TypeError` | Encode them as UTF-8 | Silently encoding would make `b"k"` and `"k"` collide in a store whose keys are bytes. A loud failure is kinder than a subtle one |
+| Fuzzer kill timing | A random 0.20–0.60 s | A shorter range, which is what I first wrote | Starting Python, importing the extension and opening the database costs well over a tenth of a second, so a shorter sleep kills the child before it has acknowledged anything. See the struggles below |
+| Stateful test configuration | Two machines: one with a roomy memtable for the long run, one with a tiny one for flush-heavy coverage | A single compromise setting | They buy different things, and the tiny setting is 42x slower per sequence. One setting would have meant either no flush coverage or a two-hour acceptance run |
+
+### An objection, as the spec asks for one
+
+The spec's snippet 9 shows the wrapper as `class DB(MutableMapping[bytes, bytes])`, and the
+C++ primer describes "the `MutableMapping` interface so `db[k] = v` works like a dict".
+
+**The objection:** `collections.abc.MutableMapping` requires `__iter__` and `__len__`. This
+engine has no range scans -- they are a P6 stretch goal -- so neither can be implemented.
+Inheriting anyway and raising `NotImplementedError` would mean `dict(db)`, `len(db)`,
+`db.keys()` and `db.items()` all type-check against the ABC and then fail at runtime. A type
+that claims an interface it cannot honor is worse than one that claims less.
+
+**What was built instead:** the mapping methods that *can* be honored -- `__getitem__`,
+`__setitem__`, `__delitem__`, `__contains__` -- without the ABC. `db[k] = v` works like a
+dict, which is what the primer actually wanted. `test_not_a_mutable_mapping` pins the
+decision so it is deliberate rather than an omission, and the class docstring explains it.
+
+**What would change it:** range-scan iterators. With those, `__iter__` and `__len__` become
+implementable and the ABC can be claimed truthfully.
+
+### Bugs that took more than one attempt
+
+**1. The stateful test was 42 times slower than it needed to be, because of one constant.**
+I set `memtable_bytes=4096` to force rotations and flushes during every example. 300
+sequences took three minutes, which extrapolated to nearly two hours for the ten thousand
+the acceptance criterion asks for.
+
+I nearly accepted that as the cost of thorough testing. Measuring instead of assuming showed
+what was really happening: the arena hands out 4 KiB blocks and a memtable's reported usage
+counts *allocated blocks*, so a 4 KiB limit is crossed by the very first write. The engine
+was rotating and flushing on nearly every single write. Measured directly: **894 ms per
+sequence at 4 KiB against 21 ms at 32 KiB.**
+
+The slowness was my configuration interacting with an implementation detail, not the engine
+being slow. The fix was to stop compromising: a roomy memtable for the ten-thousand-sequence
+run, and a second machine that keeps the flush-on-every-write coverage at a twentieth of the
+sequences. The lesson is the one I keep relearning -- a surprising number is worth one
+measurement before it becomes an accepted cost.
+
+**2. The first fuzzer verified nothing in half its iterations.** The initial kill delay was a
+random 0.02–0.35 s. Starting Python, importing the extension and opening a database takes
+well over 0.1 s, so a large fraction of iterations killed the child before it had
+acknowledged anything -- and an iteration that verifies nothing proves nothing. The summary
+line said "8 iterations, 107 acknowledged writes" and looked fine, which is what made it
+worth catching.
+
+Two changes. The floor went up to 0.20 s. And the fuzzer now distinguishes the two reasons an
+iteration can come up empty: `write_before_wal` and `write_after_wal_sync` fire on the *first*
+write, so they can never contribute verified writes and that is expected; anything else coming
+up empty means the kill was too early. **The run now fails outright if more than half its
+iterations were killed too early**, so a future change cannot quietly make the fuzzer vacuous
+while still printing a reassuring number. In the 1,000-iteration run: 288 empty by design, 1
+too early.
+
+### Measured numbers
+
+The acceptance criteria, both met and recorded in [NUMBERS.md](NUMBERS.md):
+
+- **Crash fuzzer, 1,000 iterations: 43,088 acknowledged writes verified, zero lost, zero
+  corruption errors.** 501 killed by raw `SIGKILL`, 499 by an armed crash point, all seven
+  points exercised 124–160 times each.
+- **Hypothesis**: the default configuration (300 roomy plus 15 flush-heavy sequences) passes;
+  the 10,000-sequence acceptance run is recorded in [NUMBERS.md](NUMBERS.md) once it
+  completes. Each sequence is up to 50 random operations against a dict model, with reopens
+  mixed in.
+
+CI runs a 50-iteration fuzz and the full Python suite on every push.
+
+### Five questions
+
+1. In the binding, why must the key be copied into a `std::string` *before*
+   `py::gil_scoped_release`, rather than after?
+2. The fuzzer child prints each key only after `put` returns, and flushes immediately. What
+   goes wrong if it prints before the write, and what goes wrong if it does not flush?
+3. Why does the fuzzer check only acknowledged writes rather than every key the child tried
+   to write?
+4. `db.delete(k)` on a missing key is fine, but `del db[k]` raises `KeyError`. Why the
+   difference, and what does the dunder cost that `delete` does not?
+5. Why is `stratakv.DB` deliberately not a `collections.abc.MutableMapping`?
+
+#### Answers
+
+1. Because a Python object may only be touched while holding the GIL, and `key` is a Python
+   object. After the release there is no GIL, so reading it would be undefined behavior --
+   the kind that usually works and occasionally corrupts memory. The copy puts the bytes in
+   C++ memory that the engine can read safely without it.
+2. Printing *before* the write would make the parent demand keys that were never promised, so
+   the fuzzer would report failures for writes that were legitimately in flight -- it would
+   fail on correct behavior. Not flushing would lose buffered lines to the `SIGKILL`, so the
+   parent would *not* demand writes that really were promised -- the fuzzer would silently
+   check less than it claims, which is worse because it still looks like it passed.
+3. Because a write still in flight at the kill may or may not have survived, and **both
+   outcomes are correct**: the caller was never told it succeeded. The guarantee is about
+   acknowledged writes specifically, so checking unacknowledged ones would fail the engine for
+   behavior it is allowed to have.
+4. They answer to different contracts. The engine's delete appends a tombstone, and doing that
+   for a key that is not there is meaningless rather than wrong -- so it is idempotent. But
+   `del` on a mapping raises `KeyError` in Python, and a caller will expect that. The dunder
+   therefore does a read first to find out whether the key exists, which `delete` does not
+   need and does not pay for.
+5. The ABC requires `__iter__` and `__len__`, which need range scans the engine does not have
+   yet. Inheriting and raising `NotImplementedError` would let `dict(db)` and `len(db)`
+   type-check and then fail at runtime, which is worse than not claiming the interface. The
+   useful dunders are implemented without it, and the ABC can be claimed honestly once range
+   scans exist.
+
+### Gate
+
+Suspended; see [STUDY.md](STUDY.md).

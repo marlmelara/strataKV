@@ -541,3 +541,81 @@ can jump backwards. Subtracting two time points gives a `duration`; wrapping it 
 `duration<double>` and calling `.count()` gives seconds as a plain number.
 
 `std::this_thread::sleep_for(std::chrono::seconds(60))` is Python's `time.sleep(60)`.
+
+## P5
+
+### `py::gil_scoped_release`
+
+```cpp
+const std::string owned_key = key;   // copy FIRST, while the GIL is held
+{
+  const py::gil_scoped_release no_gil;
+  status = db.Get(options, owned_key, &value);
+}
+```
+
+The **GIL** (global interpreter lock) lets only one thread run Python at a time. A C++
+extension that holds it across a disk read blocks every other Python thread for the
+duration; releasing it lets them run.
+
+`gil_scoped_release` is RAII: it releases on construction and reacquires at the closing
+brace, so an early return or a thrown exception cannot leave it released.
+
+The ordering rule is absolute: **Python objects may only be touched while holding the GIL.**
+Anything the released section needs must be copied into C++ memory first. Getting this
+wrong usually works and occasionally corrupts memory, which is the worst failure mode there
+is.
+
+### `py::bytes` and conversions
+
+`py::bytes` is a handle to a Python `bytes` object. Assigning it to a `std::string` copies
+the data; constructing `py::bytes(value)` from a `std::string` copies the other way. Each
+crossing copies, which is why very large values cost more through the bindings than in C++.
+
+pybind11 refuses to convert a Python `str` to `py::bytes` and raises `TypeError`, which is
+what makes rejecting string keys free rather than something to implement.
+
+### `py::register_exception`
+
+```cpp
+const py::object base = py::register_exception<StrataKVError>(m, "StrataKVError");
+py::register_exception<CorruptionError>(m, "CorruptionError", base.ptr());
+```
+
+Creates a real Python exception class and installs a translator, so throwing the C++ type
+raises the Python one. The third argument is the Python base class, which is how an exception
+hierarchy is mirrored across the boundary — one `except StrataKVError` then catches
+everything.
+
+Some C++ exceptions need no registration: pybind11 already maps `std::invalid_argument` to
+`ValueError`, `std::out_of_range` to `IndexError`, and `std::runtime_error` to
+`RuntimeError`.
+
+### Raising an existing Python exception from C++
+
+```cpp
+PyErr_SetString(PyExc_OSError, message.c_str());
+throw py::error_already_set();
+```
+
+To raise a *builtin*, set the Python error state with the C API and then throw
+`error_already_set`, which tells pybind11 the error is already set rather than needing
+translation. Newer pybind11 has a `py::set_error` helper; the two-line form works on every
+version.
+
+### `py::class_` members
+
+```cpp
+py::class_<PythonDB>(m, "DB")
+    .def_static("open", &PythonDB::Open, py::arg("path"), py::arg("sync") = true)
+    .def("get", &PythonDB::Get, py::arg("key"))
+    .def("__contains__", &PythonDB::Contains, py::arg("key"))
+    .def_property_readonly("closed", &PythonDB::closed);
+```
+
+- `def_static` — a `@staticmethod`/`@classmethod`-style factory.
+- `py::arg("name") = value` — gives the parameter a name and a default, so
+  `DB.open(path, sync=False)` works as a Python caller expects.
+- Binding a dunder like `__contains__` makes the operator work: `key in db`.
+- `def_property_readonly` — exposes a getter as an attribute rather than a method, so
+  `db.closed` rather than `db.closed()`.

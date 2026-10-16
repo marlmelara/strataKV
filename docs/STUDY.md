@@ -56,7 +56,7 @@ then Python and testing.
 | P2 | SSTables, bloom filters, flush, read path | [P2-sstables-flush-read-path.md](learning/P2-sstables-flush-read-path.md) | Spec quiz tab + [debrief](DEBRIEF.md) | [ ] |
 | P3 | MANIFEST, versions, compaction, merging iterator | [P3-manifest-versions-compaction.md](learning/P3-manifest-versions-compaction.md) | Spec quiz tab + [debrief](DEBRIEF.md) | [ ] |
 | P4 | Concurrency and group commit | [P4-concurrency-group-commit.md](learning/P4-concurrency-group-commit.md) | Spec quiz tab + [debrief](DEBRIEF.md) | [ ] |
-| P5 | Python package, property tests, crash fuzzer | _pending_ | | [ ] |
+| P5 | Python package, property tests, crash fuzzer | [P5-python-package-fuzzer.md](learning/P5-python-package-fuzzer.md) | Spec quiz tab + [debrief](DEBRIEF.md) | [ ] |
 | P6 | Benchmarks, README, polish | _pending_ | | [ ] |
 
 ## Reference material

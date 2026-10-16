@@ -7,6 +7,11 @@ DerivePointerAlignment: false
 PointerAlignment: Left
 IncludeBlocks: Regroup
 IncludeCategories:
+  # pybind11.h pulls in Python.h, and CPython requires Python.h to be included
+  # before any standard header, because it defines preprocessor macros that
+  # change how those headers behave. So it sorts ahead of everything.
+  - Regex: '^<pybind11/'
+    Priority: 0
   - Regex: '^<[a-z_]+>$'
     Priority: 1
   - Regex: '^<.*>$'
