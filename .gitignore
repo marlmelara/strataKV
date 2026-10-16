@@ -45,6 +45,13 @@ MANIFEST-*
 CURRENT
 LOCK
 
+# Course materials and personal study notes.
+#
+# These are the inputs the engine was built from plus a private readiness
+# checklist, not part of the engine itself. They stay on disk; the public
+# reading guide is docs/STUDY.md.
+documentation/
+
 # Editors / OS
 .DS_Store
 .idea/

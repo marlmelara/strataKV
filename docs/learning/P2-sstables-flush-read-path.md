@@ -1,7 +1,7 @@
 # P2 — SSTables, flush, and the read path
 
 Written for someone fluent in Python and new to C++ and storage engines. Terms in **bold**
-are in [GLOSSARY.md](../GLOSSARY.md) or the build spec's Glossary tab; new C++ syntax is in
+are in [GLOSSARY.md](../GLOSSARY.md); new C++ syntax is in
 [CPP_NOTES.md](../CPP_NOTES.md).
 
 ## Plain-English summary
@@ -265,8 +265,8 @@ See the [P2 debrief](../DEBRIEF.md). The short version: the sequence watermark a
 the one real design hole, and two test failures were both mistakes in the *tests* rather
 than the engine — which is its own lesson about how to read a red result.
 
-## Checkpoint
+## Questions
 
-The gate is suspended for this build; see [STUDY.md](../STUDY.md). This phase's five
-conceptual questions are in the spec's "Checkpoint quizzes" tab, and five written against
-this code are at the end of the [P2 debrief](../DEBRIEF.md).
+Five questions written against this stage's real code are at the end of the
+[P2 debrief](../DEBRIEF.md). They are worth answering out loud before reading the
+answers — recognizing an answer and being able to say it are different skills.

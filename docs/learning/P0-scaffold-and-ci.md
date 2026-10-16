@@ -1,7 +1,7 @@
 # P0 — Scaffold and CI
 
 Written for someone fluent in Python and new to C++ and storage engines. Terms in **bold**
-are defined in [GLOSSARY.md](../GLOSSARY.md) or the build spec's Glossary tab; new C++
+are defined in [GLOSSARY.md](../GLOSSARY.md); new C++
 syntax is explained in [CPP_NOTES.md](../CPP_NOTES.md).
 
 ## Plain-English summary
@@ -107,7 +107,7 @@ Status FullSyncFd(int fd, const std::string& path) {
 - `PosixError(path, errno)` — wraps the OS error number into `Status::IOError`.
   `std::strerror(errno)` turns it into readable text, like Python's `OSError.strerror`.
 
-**Compared to the learning guide (snippet 12).** The guide writes this logic directly inside
+**Compared to the obvious implementation.** The simple version writes this logic directly inside
 `PosixWritableFile::Sync()`. The real code factors it into a free function because three
 callers need it: `WritableFile::Sync`, `Env::SyncFile`, and `Env::SyncDir`. Same logic, one
 copy.
@@ -308,14 +308,12 @@ agreed with the C++ table implementation, including the `0xE3069283` the build s
 Two independent implementations agreeing is meaningfully stronger evidence than one
 implementation agreeing with itself.
 
-## Checkpoint
+## Questions
 
-The spec's checkpoint gate is **suspended for this build** — P1 started without waiting on
-a quiz pass. The questions are still here to work through later; see
-[STUDY.md](../STUDY.md) for the order to do it in.
+Five questions written against this stage's real code are at the end of the
+[P0 debrief](../DEBRIEF.md#five-questions): headers versus source files, what each of the
+four build presets catches, what undefined behavior is and why sanitizers matter, what
+scikit-build-core does during `pip install .`, and what CRC32C is and is not.
 
-Two sets cover this phase. The five conceptual questions in the spec's "Checkpoint quizzes"
-tab ask about headers versus source files, what each of the four presets catches, what
-undefined behavior is and why sanitizers matter, what scikit-build-core does during
-`pip install .`, and what CRC32C is and is not. Five further questions written against this
-repository's real code are at the end of the [P0 debrief](../DEBRIEF.md#five-questions).
+They are worth answering out loud before reading the answers — recognizing an answer and
+being able to say it are different skills.

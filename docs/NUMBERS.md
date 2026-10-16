@@ -9,6 +9,15 @@ a measurement that turned out to be measuring the wrong thing -- the older row i
 a note rather than deleted, because a number quietly replaced is indistinguishable from a
 number quietly invented.
 
+## Documentation volume
+
+| Figure | Value | Command | Machine | Date |
+| --- | --- | --- | --- | --- |
+| Words across `docs/` | **40,264** (quoted in the README as roughly 40,000) | `wc -w docs/*.md docs/learning/*.md` | M1 | 2026-10-16 |
+
+Recorded for the same reason as everything else here: the README calls the documentation
+substantial, and that is a claim a reader should be able to check rather than take.
+
 ## Machine profile
 
 Referenced below as **M1** so each row does not have to repeat it.

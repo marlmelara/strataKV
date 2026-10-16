@@ -1,6 +1,6 @@
 # Glossary additions
 
-Terms that come up in the real code and are not already in the build spec's "Glossary" tab.
+Storage, systems and concurrency terms as they come up in the real code.
 Each phase appends the terms it introduced.
 
 ## P0

@@ -35,9 +35,25 @@ CLAIM = re.compile(rf"\b\d{{1,3}}(?:,\d{{3}})+\b|\b\d+\.\d+(?:{TIMES}|x)\b|\b\d+
 EXEMPT: set[str] = set()
 
 
+def prose_only(markdown: str) -> str:
+    """Strip the parts of a document that are not claims to a reader.
+
+    URLs and HTML attributes are full of digits that look like figures -- a
+    badge pointing at "Python-3.11%2B" reads as "3.11%" to a regular
+    expression. Those are addresses, not claims, so they are removed before
+    anything is matched.
+    """
+    # Markdown link and image targets: the text stays, the target goes.
+    markdown = re.sub(r"\]\([^)]*\)", "]", markdown)
+    # Bare URLs, and every HTML tag with its attributes.
+    markdown = re.sub(r"https?://\S+", "", markdown)
+    markdown = re.sub(r"<[^>]+>", "", markdown)
+    return markdown
+
+
 def main() -> int:
     root = Path(__file__).resolve().parent.parent
-    readme = (root / "README.md").read_text()
+    readme = prose_only((root / "README.md").read_text())
     numbers = (root / "docs" / "NUMBERS.md").read_text()
 
     missing = []

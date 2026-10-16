@@ -1,7 +1,7 @@
 # C++ notes
 
-C++ features used in the real code that are not already covered in the build spec's "C++
-primer" tab. Each phase appends the features it introduced.
+C++ features used in the real code, each explained next to the closest Python. Written for
+someone fluent in Python and new to C++; each stage appends the features it introduced.
 
 ## P0
 

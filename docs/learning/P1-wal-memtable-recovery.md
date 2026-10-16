@@ -1,7 +1,7 @@
 # P1 — WAL, memtable, and crash recovery
 
 Written for someone fluent in Python and new to C++ and storage engines. Terms in **bold**
-are in [GLOSSARY.md](../GLOSSARY.md) or the build spec's Glossary tab; new C++ syntax is in
+are in [GLOSSARY.md](../GLOSSARY.md); new C++ syntax is in
 [CPP_NOTES.md](../CPP_NOTES.md).
 
 ## Plain-English summary
@@ -130,8 +130,8 @@ visible in memory but absent from disk — and the next open would silently lose
 
 ### 3. `WalReader::Scan` — telling a torn tail from real corruption
 
-This is the most interesting logic in the phase, and the part the teaching snippet
-deliberately simplifies.
+This is the most interesting logic in this stage, and the part most descriptions of a
+write-ahead log quietly skip.
 
 ```cpp
     if (record.state == RecordState::kIncomplete) {
@@ -168,7 +168,7 @@ The scan is a separate pass from the replay on purpose. Applying records as they
 would mean replaying records that sit *after* mid-file damage, which must instead be
 refused outright.
 
-**Compared to the learning guide (snippet 1).** The guide's `Replay` truncates at the first
+**Compared to the obvious implementation.** A single-pass `Replay` truncates at the first
 bad record in a single pass, and its "what to understand" note says the real reader should
 also detect valid records after a bad one. That note is the whole difference: this
 implementation scans first, then applies, which is what makes the distinction possible.
@@ -248,12 +248,12 @@ snapshot, torn write, trailer, and write amplification (previewed).
 ## Struggles
 
 See the [P1 debrief](../DEBRIEF.md) for the bugs and the decisions. The short version: the
-only genuinely hard design question in this phase was not writing the skip list — the
-teaching snippet is accurate and translates directly — but deciding **what a failed
+only genuinely hard design question here was not writing the skip list — the standard
+algorithm translates directly — but deciding **what a failed
 checksum means**, which is answered only by what comes after it in the file.
 
-## Checkpoint
+## Questions
 
-The gate is suspended for this build; see [STUDY.md](../STUDY.md). This phase's five
-conceptual questions are in the spec's "Checkpoint quizzes" tab, and five written against
-this code are at the end of the [P1 debrief](../DEBRIEF.md).
+Five questions written against this stage's real code are at the end of the
+[P1 debrief](../DEBRIEF.md). They are worth answering out loud before reading the
+answers — recognizing an answer and being able to say it are different skills.

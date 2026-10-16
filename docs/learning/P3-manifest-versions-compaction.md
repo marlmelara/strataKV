@@ -1,7 +1,7 @@
 # P3 — MANIFEST, versions, and compaction
 
 Written for someone fluent in Python and new to C++ and storage engines. Terms in **bold**
-are in [GLOSSARY.md](../GLOSSARY.md) or the build spec's Glossary tab; new C++ syntax is in
+are in [GLOSSARY.md](../GLOSSARY.md); new C++ syntax is in
 [CPP_NOTES.md](../CPP_NOTES.md).
 
 ## Plain-English summary
@@ -128,7 +128,7 @@ leaves `last_sequence_for_key = 20`, and `20 <= 15` is false, so version 10 surv
 The matching tests are `KeepsAShadowedVersionThatALiveSnapshotStillNeeds` and
 `KeepsATombstoneALiveSnapshotStillNeeds`.
 
-**Compared to the learning guide (snippet 6).** The guide drops every entry after the first
+**Compared to the obvious implementation.** The simple version drops every entry after the first
 for each user key, and drops tombstones at the bottom level. That is correct for a database
 with no concurrent reads. The real code adds the snapshot condition, because reads here run
 without a lock while compaction is in progress.
@@ -229,8 +229,8 @@ Three real bugs, all found by tests rather than by reading. See the
 `RemoveObsoleteFiles` deleted the MANIFEST it had just written, which destroyed the database
 on the next open.
 
-## Checkpoint
+## Questions
 
-The gate is suspended for this build; see [STUDY.md](../STUDY.md). This phase's five
-conceptual questions are in the spec's "Checkpoint quizzes" tab, and five written against
-this code are at the end of the [P3 debrief](../DEBRIEF.md).
+Five questions written against this stage's real code are at the end of the
+[P3 debrief](../DEBRIEF.md). They are worth answering out loud before reading the
+answers — recognizing an answer and being able to say it are different skills.

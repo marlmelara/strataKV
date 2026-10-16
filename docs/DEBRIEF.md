@@ -190,7 +190,7 @@ at named moments in that sequence on demand.
 
 | Decision | Chose | Alternative considered | Why the alternative lost |
 | --- | --- | --- | --- |
-| Classifying a failed checksum | Scan the entire log first, then apply only the prefix known to be good | Truncate at the first bad record in one pass, as the teaching snippet does | A single pass cannot tell a torn tail from mid-file damage, because the answer depends on what comes *after* the bad record. Applying as it went would also replay records sitting beyond the damage. The spec's own note on snippet 1 asks for this distinction |
+| Classifying a failed checksum | Scan the entire log first, then apply only the prefix known to be good | Truncate at the first bad record in one pass, which is the obvious approach | A single pass cannot tell a torn tail from mid-file damage, because the answer depends on what comes *after* the bad record. Applying as it went would also replay records sitting beyond the damage |
 | Reopening the log | Append to the existing log | Start a fresh log and delete the old one, as LevelDB does on open | In P1 there are no SSTables, so the log is the *only* durable copy. Replacing it would discard the entire database on every open |
 | Node storage | `string_view` into arena-copied bytes | `std::string` members in the node | The arena frees blocks without running destructors, so a `std::string` member would leak its heap buffer on every node. ASan would have reported it, but the design is simply wrong |
 | Variable-height pointers | A separate arena-allocated array, reached through a `next` pointer | The classic trailing `next[1]` "struct hack" that LevelDB uses | Indexing past the end of a one-element array is undefined behavior, and the project runs UBSan with `-fno-sanitize-recover=all`. The pointer version costs one extra arena allocation and is actually defined |
@@ -232,7 +232,7 @@ plainly rather than dressing up. Three things are still worth recording:
 
 ### The one genuinely hard design question
 
-Not the skip list — the teaching snippet is accurate and translated almost directly. It was
+Not the skip list — the standard algorithm translated almost directly. It was
 **what a failed checksum means.**
 
 A record whose bytes are all present but whose checksum fails is ambiguous. It could be the
@@ -374,7 +374,7 @@ crash anywhere in the flush leaves the data recoverable from one place or the ot
 | The 1,000,000-key acceptance test | Default 4 MB memtable, batched writes, `kNoSync` | One synced `Put` per key | `kSyncEveryWrite` with `F_FULLFSYNC` would mean a million physical flushes and hours of runtime. Durability has its own dedicated tests; this one is about volume. It runs in 12 seconds |
 | Crash-point testing | A separate helper binary run as a child process | In-process death tests | A crash point calls `_Exit`, which would take the test runner with it. The helper prints each key only *after* its `Put` returns, so its output is exactly the set of acknowledged writes -- the same design P5's fuzzer will use |
 
-### An objection, as the spec asks for one
+### An objection worth recording
 
 The spec fixes the data block encoding as "a plain `klen | key | vlen | value` encoding" with
 no per-block checksum; only the footer has one. The implementation follows that exactly.
@@ -545,7 +545,7 @@ are registered so compaction never drops a version a live read still needs.
 
 | Decision | Chose | Alternative considered | Why the alternative lost |
 | --- | --- | --- | --- |
-| Protecting in-flight reads from compaction | Register every read's snapshot in a multiset; compaction never drops a version at or above the oldest one | Drop every shadowed version, as the teaching snippet does | The snippet is correct for a database with no concurrent reads. Here, a read captures its snapshot and then searches without a lock, so a write plus a completed compaction can happen underneath it. Dropping the version it needed makes an existing key read as **NotFound** -- a silent wrong answer. Costs one multiset insert and erase per read |
+| Protecting in-flight reads from compaction | Register every read's snapshot in a multiset; compaction never drops a version at or above the oldest one | Drop every shadowed version, which is the obvious rule | That rule is correct for a database with no concurrent reads. Here, a read captures its snapshot and then searches without a lock, so a write plus a completed compaction can happen underneath it. Dropping the version it needed makes an existing key read as **NotFound** -- a silent wrong answer. Costs one multiset insert and erase per read |
 | Where open readers live | Inside the Version, alongside the file metadata | A separate table cache keyed by file number, as LevelDB has | Keeps everything in `version.{h,cc}` as the spec's layout specifies, and makes "a reader holds a Version so its files cannot be deleted" literally true rather than a convention. A cache would be better once there are many levels |
 | Splitting compaction output | Only at a user-key boundary | Split whenever the target size is reached | Two L1 files both holding one user key would overlap, and the read path binary searches L1 assuming no overlap. The bug would be silently missing data, not a crash |
 | MANIFEST framing | Reuse the WAL's record framing, factored into `ReplayRecords` | A second record reader for the MANIFEST | The spec says "the same record framing as the WAL". Reusing it also reuses the torn-tail and mid-file-corruption rules, which took real thought to get right in P1 and would have drifted if reimplemented |
@@ -1018,20 +1018,20 @@ named crash point -- reopens the database, and demands every acknowledged write 
 | Fuzzer kill timing | A random 0.20–0.60 s | A shorter range, which is what I first wrote | Starting Python, importing the extension and opening the database costs well over a tenth of a second, so a shorter sleep kills the child before it has acknowledged anything. See the struggles below |
 | Stateful test configuration | Two machines: one with a roomy memtable for the long run, one with a tiny one for flush-heavy coverage | A single compromise setting | They buy different things, and the tiny setting is 42x slower per sequence. One setting would have meant either no flush coverage or a two-hour acceptance run |
 
-### An objection, as the spec asks for one
+### An objection worth recording
 
-The spec's snippet 9 shows the wrapper as `class DB(MutableMapping[bytes, bytes])`, and the
-C++ primer describes "the `MutableMapping` interface so `db[k] = v` works like a dict".
+The obvious design for the Python wrapper is `class DB(MutableMapping[bytes, bytes])`, so
+that `db[k] = v` works like a dict.
 
 **The objection:** `collections.abc.MutableMapping` requires `__iter__` and `__len__`. This
-engine has no range scans -- they are a P6 stretch goal -- so neither can be implemented.
+engine has no range scans -- a documented limitation -- so neither can be implemented.
 Inheriting anyway and raising `NotImplementedError` would mean `dict(db)`, `len(db)`,
 `db.keys()` and `db.items()` all type-check against the ABC and then fail at runtime. A type
 that claims an interface it cannot honor is worse than one that claims less.
 
 **What was built instead:** the mapping methods that *can* be honored -- `__getitem__`,
 `__setitem__`, `__delitem__`, `__contains__` -- without the ABC. `db[k] = v` works like a
-dict, which is what the primer actually wanted. `test_not_a_mutable_mapping` pins the
+dict, which is what that design actually wanted. `test_not_a_mutable_mapping` pins the
 decision so it is deliberate rather than an omission, and the class docstring explains it.
 
 **What would change it:** range-scan iterators. With those, `__iter__` and `__len__` become

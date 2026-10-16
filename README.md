@@ -1,19 +1,55 @@
 # StrataKV
 
-An embedded key-value storage engine built on a log-structured merge tree (LSM tree).
-C++20 engine, Python package, crash fuzzer, and benchmarks against SQLite. In one
-sentence: a tiny RocksDB — you `put`, `get`, and `delete` keys, every acknowledged write
-survives `kill -9`, and reads stay fast as data grows past memory.
+**A crash-safe LSM-tree key-value storage engine, written from scratch in C++20.**
 
-> **Status: complete, P0 through P6.** Every acknowledged write reaches a checksummed
-> write-ahead log and is flushed to the physical medium before `Put` returns. Full
-> memtables flush to immutable SSTables on a background thread; compaction merges L0 into
-> L1, reclaiming space from overwrites and deletes; a MANIFEST records the file set and
-> reference-counted version snapshots keep files alive under running reads. Leader-follower
-> group commit shares one `fsync` across queued writers, measured **4.74× faster** at 8
-> writers. The crash fuzzer has verified **40,851 acknowledged writes across 1,000 SIGKILL
-> crashes with zero lost**. Every number here comes from [docs/NUMBERS.md](docs/NUMBERS.md),
-> with the command that produced it.
+[![CI](https://github.com/marlmelara/strataKV/actions/workflows/ci.yml/badge.svg)](https://github.com/marlmelara/strataKV/actions/workflows/ci.yml)
+[![License: MIT](https://img.shields.io/badge/license-MIT-blue.svg)](LICENSE)
+[![C++20](https://img.shields.io/badge/C%2B%2B-20-00599C.svg?logo=cplusplus&logoColor=white)](CMakeLists.txt)
+[![Python 3.11+](https://img.shields.io/badge/Python-3.11%2B-3776AB.svg?logo=python&logoColor=white)](python/stratakv/__init__.py)
+
+A tiny RocksDB. You `put`, `get`, and `delete` keys; every acknowledged write survives
+`kill -9`; and reads stay fast as the data grows past memory. The engine is C++20 with no
+third-party runtime dependencies — the skip list, bloom filters, CRC32C, write-ahead log,
+SSTable format, compaction and MANIFEST are all written here — with a Python package on
+top for tooling, property tests, and the crash fuzzer.
+
+## The claim, demonstrated
+
+The whole project exists to make one promise and keep it: **if `put` returned, that write
+survives a crash.**
+
+<p align="center">
+  <img src="docs/media/crash-demo.gif" width="100%"
+       alt="A terminal recording: a writer process acknowledges 250 writes, is killed with SIGKILL, and after reopening all 250 are recovered with none lost.">
+</p>
+
+Nothing above is simulated. A real child process writes with `sync=True`, really receives
+`SIGKILL` — no cleanup, no destructors, no flushed buffers — and the database is really
+reopened and made to produce every acknowledged write. Run it yourself:
+
+```bash
+python scripts/demo_crash_safety.py
+```
+
+"Acknowledged" is defined operationally rather than asserted: the writer prints a key only
+*after* its `put` returns, so the set being demanded back is exactly the set of promises
+the engine made. Writes still in flight at the kill are deliberately not checked — the
+caller was never told they succeeded, so either outcome is correct.
+
+## At a glance
+
+| | |
+| --- | --- |
+| **Crash safety** | 1,000 `SIGKILL` crashes, **40,851 acknowledged writes, 0 lost, 0 corrupted** |
+| **Correctness** | 234 tests green under debug, release, ASan+UBSan and TSan, on Linux and macOS |
+| **Concurrency** | Lock-free readers; 60 s stress at 8 writers × 8 readers, **0 ThreadSanitizer reports** |
+| **Throughput** | Group commit shares one `fsync` across writers: **4.74× faster** at 8 writers |
+| **Reads** | Bloom filters answer a miss without touching a file: **13.12× faster than SQLite** at 1 KB |
+| **Space** | Compaction holds space amplification to **1.445×** |
+
+Every number here is reproducible and recorded in [docs/NUMBERS.md](docs/NUMBERS.md) with
+the command, machine and date that produced it — and CI fails if the README ever quotes a
+figure that file does not record.
 
 ## Quick start
 
@@ -244,7 +280,7 @@ instead of quietly reporting 1.02x as though it meant something.
 
 ### Four benchmark bugs, every one of them flattering
 
-Most of the work in this phase was not writing the benchmark but distrusting it. Each of
+Most of the benchmarking work was not writing the benchmark but distrusting it. Each of
 these produced a believable number:
 
 | Bug | Effect |
@@ -296,7 +332,7 @@ real formatting decisions, so the version is fixed rather than the code contorte
 pip install -r requirements-lint.txt
 find include src tests/cpp python \( -name '*.cc' -o -name '*.h' \) -print | xargs clang-format -i
 ./tools/run-clang-tidy.sh build/debug
-ruff check python tests/py tools && ruff format python tests/py tools
+ruff check python tests/py tools bench scripts && ruff format python tests/py tools bench scripts
 ```
 
 ## Design decisions worth defending
@@ -346,9 +382,18 @@ write batches, and Windows support.
 
 ## Documentation
 
-- [docs/STUDY.md](docs/STUDY.md) — **start here to learn the codebase**: the phase-by-phase study path
-- [docs/DESIGN.md](docs/DESIGN.md) — on-disk formats and the decisions behind them
-- [docs/DEBRIEF.md](docs/DEBRIEF.md) — what each phase built, and what it cost
-- [docs/NUMBERS.md](docs/NUMBERS.md) — every measured number, with the command that produced it
-- [docs/learning/](docs/learning/) — per-phase walkthroughs of the real code
-- [docs/CPP_NOTES.md](docs/CPP_NOTES.md), [docs/GLOSSARY.md](docs/GLOSSARY.md) — C++ features and terms as they come up
+The engine is heavily documented, because an implementation you cannot explain is not
+finished. Roughly **40,000 words** of it, written alongside the code rather than after.
+
+- **[docs/STUDY.md](docs/STUDY.md)** — start here. The five ideas that carry the design,
+  and the order to read the code in.
+- **[docs/DESIGN.md](docs/DESIGN.md)** — on-disk formats and the durability invariants,
+  with the reasoning behind each.
+- **[docs/DEBRIEF.md](docs/DEBRIEF.md)** — what each stage built, the alternatives that
+  lost, and every significant bug. Including the ones that were embarrassing.
+- **[docs/NUMBERS.md](docs/NUMBERS.md)** — every measured number with the command, machine
+  and date that produced it, including superseded figures kept with a note.
+- [docs/learning/](docs/learning/) — stage-by-stage walkthroughs of the real code, written
+  for someone fluent in Python and new to C++.
+- [docs/CPP_NOTES.md](docs/CPP_NOTES.md), [docs/GLOSSARY.md](docs/GLOSSARY.md) — C++
+  features and storage terms as they come up.
