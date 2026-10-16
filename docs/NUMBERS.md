@@ -149,13 +149,19 @@ measured claim on a named machine as the spec requires.
 
 | Metric | Value | Command | Machine | Date |
 | --- | --- | --- | --- | --- |
-| Crash fuzzer, 1,000 iterations | **43,088 acknowledged writes verified, 0 lost, 0 corruption errors** | `python tests/py/crash_fuzz.py --iterations 1000` | M1 | 2026-10-16 |
-| — killed by raw `SIGKILL` | 501 of 1,000 | same run | M1 | 2026-10-16 |
-| — killed by an armed crash point | 499 of 1,000, all 7 points exercised 124–160 times each | same run | M1 | 2026-10-16 |
-| — wall clock | 459 s | same run | M1 | 2026-10-16 |
+| Crash fuzzer, 1,000 iterations | **40,851 acknowledged writes verified, 0 lost, 0 corruption errors** | `python tests/py/crash_fuzz.py --iterations 1000` | M1 | 2026-10-16 |
+| — killed by raw `SIGKILL` | 555 of 1,000 | same run | M1 | 2026-10-16 |
+| — killed by an armed crash point | 445 of 1,000, all 7 points exercised 127–168 times each | same run | M1 | 2026-10-16 |
+| — wall clock | 553 s | same run | M1 | 2026-10-16 |
+
+This run is **after** per-block checksums were added. An earlier run against the previous
+format verified 43,088 writes; the figures differ only because the kill moment is random,
+and the number recorded here is the one that describes the code as it stands. Keeping the
+older figure would have meant publishing a number no command currently reproduces.
 | Python unit tests | 42 passed | `pytest tests/py/test_basic.py` | M1 | 2026-10-16 |
 | Hypothesis, default configuration | 300 roomy + 15 flush-heavy sequences passed | `pytest tests/py/test_stateful.py` | M1 | 2026-10-16 |
 | **Hypothesis, 10,000 sequences** | **10,000 roomy + 500 flush-heavy sequences passed**, up to 50 operations each | `STRATAKV_HYPOTHESIS_EXAMPLES=10000 pytest tests/py/test_stateful.py` | M1 | 2026-10-16 |
+| Hypothesis, after block checksums | re-run in flight; the figure above predates that format change | same command | M1 | — |
 | — wall clock | 2,957 s (49 min) | same run | M1 | 2026-10-16 |
 
 The 49 minutes are almost entirely `fsync`. The `reopen` rule fires on roughly one step in

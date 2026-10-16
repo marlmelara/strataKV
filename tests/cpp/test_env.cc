@@ -229,6 +229,85 @@ TEST_F(EnvTest, SyncDirFailsOnAPathThatIsNotADirectory) {
   EXPECT_TRUE(env_.SyncDir(path).ok());
 }
 
+// The fsyncgate lesson, finally executed rather than only documented.
+//
+// On Linux a failed fsync may leave the kernel having already discarded the
+// dirty pages AND cleared the error flag, so a second fsync can report success
+// over data that no longer exists. Postgres hit this in 2018 and now treats an
+// fsync failure as fatal. PosixWritableFile therefore remembers the failure and
+// returns it from every later call, so the engine can never acknowledge a write
+// on top of a sync that failed.
+//
+// Until now that logic was reviewed but never run by a test.
+class EnvSyncFailureTest : public EnvTest {
+ protected:
+  void TearDown() override {
+    Env::SetSyncFailureInjectionForTesting("", 0);
+    Env::SetFailureInjectionForTesting("", 0);
+    EnvTest::TearDown();
+  }
+};
+
+TEST_F(EnvSyncFailureTest, AFailedSyncIsStickyAndPoisonsEveryLaterOperation) {
+  const std::string path = Path("sticky.log");
+
+  std::unique_ptr<WritableFile> file;
+  ASSERT_TRUE(env_.NewWritableFile(path, &file).ok());
+  ASSERT_TRUE(file->Append(std::string_view("before the failure")).ok());
+
+  // Arm exactly one sync failure on this file.
+  Env::SetSyncFailureInjectionForTesting("sticky.log", 1);
+
+  const Status failed = file->Sync();
+  ASSERT_TRUE(failed.IsIOError()) << failed.ToString();
+
+  // Disarm, so anything that still fails does so because the error was
+  // remembered rather than because it was injected again. This is the whole
+  // point: a retry must NOT appear to succeed.
+  Env::SetSyncFailureInjectionForTesting("", 0);
+
+  EXPECT_TRUE(file->Sync().IsIOError()) << "a retried sync must not report success";
+  EXPECT_TRUE(file->Append(std::string_view("after")).IsIOError())
+      << "appending after a failed sync must not be allowed to succeed";
+  EXPECT_TRUE(file->Truncate(0).IsIOError());
+  EXPECT_TRUE(file->Close().IsIOError()) << "Close must surface the remembered failure";
+}
+
+TEST_F(EnvSyncFailureTest, AnInjectedSyncFailureNamesThePathAndIsBounded) {
+  const std::string first = Path("first.log");
+  const std::string second = Path("second.log");
+
+  std::unique_ptr<WritableFile> first_file;
+  std::unique_ptr<WritableFile> second_file;
+  ASSERT_TRUE(env_.NewWritableFile(first, &first_file).ok());
+  ASSERT_TRUE(env_.NewWritableFile(second, &second_file).ok());
+
+  // Only the first file is targeted, and only once.
+  Env::SetSyncFailureInjectionForTesting("first.log", 1);
+
+  EXPECT_TRUE(first_file->Sync().IsIOError());
+  EXPECT_TRUE(second_file->Sync().ok()) << "a non-matching path must not be failed";
+
+  // The single armed failure is spent, so a fresh file syncs normally.
+  std::unique_ptr<WritableFile> third;
+  ASSERT_TRUE(env_.NewWritableFile(Path("first.log.other"), &third).ok());
+  ASSERT_TRUE(third->Append(std::string_view("x")).ok());
+  EXPECT_TRUE(third->Sync().ok()) << "the injection count must be bounded";
+}
+
+TEST_F(EnvSyncFailureTest, SyncFileAndSyncDirAlsoReportAnInjectedFailure) {
+  const std::string path = Path("plain.txt");
+  ASSERT_TRUE(env_.WriteFile(path, "contents").ok());
+
+  Env::SetSyncFailureInjectionForTesting("plain.txt", 1);
+  EXPECT_TRUE(env_.SyncFile(path).IsIOError());
+
+  // Directory syncs go through the same place, which is what makes one hook
+  // enough to cover every durability point.
+  Env::SetSyncFailureInjectionForTesting(dir_, 1);
+  EXPECT_TRUE(env_.SyncDir(dir_).IsIOError());
+}
+
 TEST_F(EnvTest, DefaultEnvIsASingleton) { EXPECT_EQ(&Env::Default(), &Env::Default()); }
 
 }  // namespace

@@ -49,6 +49,24 @@ int& InjectionRemaining() {
   return remaining;
 }
 
+std::string& SyncInjectionSubstring() {
+  static std::string substring;
+  return substring;
+}
+
+int& SyncInjectionRemaining() {
+  static int remaining = 0;
+  return remaining;
+}
+
+bool ShouldInjectSyncFailure(const std::string& path) {
+  const std::lock_guard<std::mutex> guard(InjectionMutex());
+  if (SyncInjectionRemaining() <= 0 || SyncInjectionSubstring().empty()) return false;
+  if (path.find(SyncInjectionSubstring()) == std::string::npos) return false;
+  --SyncInjectionRemaining();
+  return true;
+}
+
 // True when this path should be failed, consuming one of the armed failures.
 bool ShouldInjectFailure(const std::string& path) {
   const std::lock_guard<std::mutex> guard(InjectionMutex());
@@ -90,6 +108,9 @@ std::atomic<uint64_t>& SyncCounter() {
 // so a failure there falls back to plain fsync rather than failing the write.
 Status FullSyncFd(int fd, const std::string& path) {
   SyncCounter().fetch_add(1, std::memory_order_relaxed);
+  if (ShouldInjectSyncFailure(path)) {
+    return Status::IOError(path, "injected sync failure (test only)");
+  }
 #if defined(__APPLE__)
   if (::fcntl(fd, F_FULLFSYNC) == 0) return Status::OK();
 #endif
@@ -375,6 +396,12 @@ class PosixEnv final : public Env {
 }  // namespace
 
 uint64_t Env::SyncCountForTesting() { return SyncCounter().load(std::memory_order_relaxed); }
+
+void Env::SetSyncFailureInjectionForTesting(std::string_view path_substring, int count) {
+  const std::lock_guard<std::mutex> guard(InjectionMutex());
+  SyncInjectionSubstring().assign(path_substring);
+  SyncInjectionRemaining() = count;
+}
 
 void Env::ResetSyncCountForTesting() { SyncCounter().store(0, std::memory_order_relaxed); }
 

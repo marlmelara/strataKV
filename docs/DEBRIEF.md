@@ -1194,6 +1194,35 @@ Four new ones, and the second is the one that matters:
 231 tests pass, 231 of them unchanged in behavior: this is a format change, and nothing else
 had to move to accommodate it.
 
+### Two gaps the re-verification exposed
+
+**The headline numbers were stale.** The 1,000-iteration fuzzer result and the 10,000
+Hypothesis sequences were both measured *before* the block-checksum format change, and only
+60 fuzzer iterations were re-run afterwards. By this project's own rule -- every number
+traces to a command that was actually run -- those figures had stopped describing the code.
+Re-running the fuzzer gives **40,851 acknowledged writes verified, zero lost**, and that is
+now what [NUMBERS.md](NUMBERS.md) records. The difference from 43,088 is the random kill
+moment, not a regression.
+
+The lesson is narrow and worth keeping: **a format change invalidates every measurement
+taken against the old format**, including the ones that are only reassuring rather than
+load-bearing. Re-running a 60-iteration smoke test is not the same as re-establishing the
+claim.
+
+**The sticky-fsync logic had never been executed.** `PosixWritableFile` remembers a failed
+sync and returns it from every later call, so the engine can never acknowledge a write on
+top of a sync that failed -- the "fsyncgate" lesson from P0, written up at length in that
+debrief and used as an interview talking point. No test had ever run it, because the fault
+injection added in P4 only hooked `NewWritableFile`.
+
+It is hooked at the sync now, and three tests cover it: a failed sync poisons every later
+`Append`, `Sync`, `Truncate` and `Close` *after the injection is disarmed*, so what fails is
+the remembered error rather than a fresh injection -- which is precisely the property that
+matters, since the whole point is that a retry must not appear to succeed.
+
+Worth noticing how this one hid: it was the most carefully *documented* piece of error
+handling in the project, which is probably why nobody thought to check whether it ran.
+
 ### What is still open
 
 The deviation itself. The spec fixes the data block encoding as "a plain
