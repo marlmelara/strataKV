@@ -880,6 +880,32 @@ could have consumed the single armed failure instead of the flush -- and got the
 treatment, plus a tightened assertion that writes must actually be refused rather than the
 loose "one of these two things went wrong".
 
+**And a third, found by CI: my throughput test was asserting a property of the disk.**
+`EightWritersAreAtLeastThreeTimesFasterWithGroupCommit` passed locally at 4.74x and failed
+on the macOS CI runner at **1.40x**. The engine was not at fault. The runner's baseline ran
+at 2,159 writes/sec against 372 on this machine -- about 0.46 ms per sync rather than
+2.7 ms -- which means `F_FULLFSYNC` there is absorbed by a host cache instead of reaching a
+platter. With `fsync` nearly free there is nothing to amortize, so the speed-up collapses.
+
+The wrong fix would have been to lower the threshold until CI passed, which would have left
+a number that means nothing. The right fix was to notice that the test was measuring the
+**disk** and split the claim in two:
+
+- **The mechanism**, which is hardware-independent: group commit issues *fewer syncs* for the
+  same work. `GroupCommitIssuesFarFewerSyncsForTheSameWork` counts them -- 1,200 writes cost
+  1,200 syncs without grouping and 258 with it -- and that is what CI gates on, because
+  counting operations gives the same answer everywhere.
+- **The benefit**, which is not: the timing test prints its numbers on every machine but only
+  asserts the 3x ratio where the baseline shows at least 1 ms per sync. Below that it skips
+  with a message saying why.
+
+This needed an `Env` sync counter to implement, which was cheap, and it is a better test than
+the one it replaces: the sync count states the algorithm's claim directly, where the timing
+was a proxy for it that happened to correlate on my hardware. The spec asks for the 3x to be
+"measured and recorded in NUMBERS.md", and 4.74x on a named machine is still what is recorded
+there -- the assertion simply no longer pretends to be reproducible on hardware that cannot
+reproduce it.
+
 **A tooling note.** My sweep command reported asan as having failures when it had none: the
 grep that extracts failing test names also matched ctest's list of *skipped* tests. Two tests
 are deliberately skipped under the sanitizers, so a clean run looked dirty. The pattern now

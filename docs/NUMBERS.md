@@ -110,6 +110,8 @@ the `fsync` cost is what is being shared.
 | **Group commit speed-up** | **4.74x** | same test | M1 | 2026-10-15 |
 | Same measurement, release build | 345 → 1,629, **4.72x** | `./build/release/tests/cpp/stratakv_tests --gtest_filter='GroupCommitTest.EightWriters*'` | M1 | 2026-10-15 |
 | 60 s stress, 8 writers + 8 readers, under TSan | 76,538 writes, 5,840,860 reads, **0 reports** | `./build/tsan/tests/cpp/stratakv_tests --gtest_filter='GroupCommitTest.EightWritersAndEightReadersUnderSustainedLoad'` | M1 | 2026-10-15 |
+| Syncs for 1,200 durable writes, group commit **off** | 1,200 (one per write) | `./build/debug/tests/cpp/stratakv_tests --gtest_filter='GroupCommitTest.GroupCommitIssuesFarFewerSyncsForTheSameWork'` | M1 | 2026-10-15 |
+| Syncs for 1,200 durable writes, group commit **on** | **258** (4.65 writes per sync) | same test | M1 | 2026-10-15 |
 
 The acceptance bar was 3x; the measurement is 4.74x. Two things are worth reading off these
 numbers rather than just the ratio:
@@ -121,6 +123,21 @@ numbers rather than just the ratio:
 - **372 writes/sec across 8 writers each paying for their own sync implies about 2.7 ms per
   `F_FULLFSYNC`** on this disk. That is a believable figure for a flush that really reaches
   the platter, and it is the number group commit is amortizing.
+
+### Why the timing ratio is not the CI gate
+
+The same code measured **1.40x** on a GitHub macOS runner, where the baseline ran at 2,159
+writes/sec — about **0.46 ms per sync**, five times cheaper than on real hardware. At that
+price `fsync` is being absorbed by a host cache rather than reaching a platter, so there is
+nothing for group commit to amortize and the ratio is measuring the runner's disk rather
+than this engine.
+
+The timing test therefore prints its numbers everywhere but only asserts the 3x ratio when
+the measured baseline shows at least 1 ms per sync. What CI gates on instead is the
+**sync count**: 1,200 writes cost 1,200 syncs without grouping and 258 with it. That is the
+mechanism stated as a count of operations rather than a span of time, so it holds on any
+machine — which is the right shape for an assertion, and the recorded 4.74x stays the
+measured claim on a named machine as the spec requires.
 
 Still to come:
 

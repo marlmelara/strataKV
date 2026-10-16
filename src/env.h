@@ -94,6 +94,16 @@ class Env {
   // operating system, so one hook covers every path that can fail.
   static void SetFailureInjectionForTesting(std::string_view path_substring, int count);
 
+  // Test-only count of durable syncs performed.
+  //
+  // This is how group commit is verified in a way that does not depend on the
+  // machine: the mechanism's claim is that it issues FEWER syncs for the same
+  // work, which is a property of the algorithm. How much time that saves is a
+  // property of the disk, and on a virtualized one where fsync does not really
+  // flush, it saves almost nothing.
+  static uint64_t SyncCountForTesting();
+  static void ResetSyncCountForTesting();
+
   // The process-wide POSIX implementation. Returned by reference because there
   // is exactly one and nobody owns it.
   static Env& Default();

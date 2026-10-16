@@ -73,6 +73,13 @@ Status WriteFully(int fd, const uint8_t* data, size_t n, const std::string& path
   return Status::OK();
 }
 
+// Counts durable syncs, for the group-commit tests. Relaxed ordering: it is a
+// statistic, and no decision depends on reading an exact value.
+std::atomic<uint64_t>& SyncCounter() {
+  static std::atomic<uint64_t> counter{0};
+  return counter;
+}
+
 // The one place that decides what "on disk" means.
 //
 // On macOS, fsync() hands data to the drive but does not ask the drive to empty
@@ -80,6 +87,7 @@ Status WriteFully(int fd, const uint8_t* data, size_t n, const std::string& path
 // does ask. Some filesystems and network mounts do not implement F_FULLFSYNC,
 // so a failure there falls back to plain fsync rather than failing the write.
 Status FullSyncFd(int fd, const std::string& path) {
+  SyncCounter().fetch_add(1, std::memory_order_relaxed);
 #if defined(__APPLE__)
   if (::fcntl(fd, F_FULLFSYNC) == 0) return Status::OK();
 #endif
@@ -363,6 +371,10 @@ class PosixEnv final : public Env {
 };
 
 }  // namespace
+
+uint64_t Env::SyncCountForTesting() { return SyncCounter().load(std::memory_order_relaxed); }
+
+void Env::ResetSyncCountForTesting() { SyncCounter().store(0, std::memory_order_relaxed); }
 
 void Env::SetFailureInjectionForTesting(std::string_view path_substring, int count) {
   const std::lock_guard<std::mutex> guard(InjectionMutex());
